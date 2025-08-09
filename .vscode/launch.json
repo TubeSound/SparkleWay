@@ -1,0 +1,22 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "🐙 FastAPI Debug (main.py in backend/)",
+            "type": "python",
+            "request": "launch",
+            "module": "uvicorn",
+            "cwd": "${workspaceFolder}/backend", // ← backend に移動して起動
+            "args": [
+                "main:app", // ← backend 配下だから main:app
+                "--reload",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000"
+            ],
+            "justMyCode": true,
+            "console": "integratedTerminal" // ブレークポイントも効く
+        }
+    ]
+}
