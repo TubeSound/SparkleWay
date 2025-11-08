@@ -21,8 +21,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { parseCsvToCandles } from '@/lib/parseCsv';
 
+// === ここを必要に応じて変更 ===
+const BACKEND_BASE = 'http://localhost:8000';
+const DEFAULT_BACKEND_FILE = 'NIKKEI_H1_2025_10.csv';
 
 const SYMBOLS: Record<string, string> = {
   USDJPY: 'USD/JPY',
@@ -39,31 +41,25 @@ const TIMEFRAMES: Record<string, string> = {
   '1d': '日足',
 };
 
-
-
 export default function Home() {
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
 
-  const [file, setFile] = useState<File | null>(null);
   const [symbol, setSymbol] = useState<string>('');
   const [timeframe, setTimeframe] = useState<string>('');
 
-  const handleCSVRead = async () => {
-    if (!file || !chartContainerRef.current) return;
+  // バックエンドから読むファイル名（テキスト指定）
+  const [backendFile, setBackendFile] = useState<string>(DEFAULT_BACKEND_FILE);
 
-    const text = await file.text();
-    const candlesticks = parseCsvToCandles(text);
-
-    if (candlesticks.length === 0) {
-      console.error("No valid candlestick data parsed from CSV.");
-      return;
-    }
+  // チャートを作り直す共通関数（あなたの動いていた版に忠実）
+  const createOrResetChart = () => {
+    if (!chartContainerRef.current) return;
 
     if (chartRef.current) {
       chartRef.current.remove();
       chartRef.current = null;
+      seriesRef.current = null;
     }
 
     const chartOptions: DeepPartial<ChartOptions> = {
@@ -95,12 +91,46 @@ export default function Home() {
     };
 
     const candleSeries = chart.addSeries(CandlestickSeries, seriesOptions);
-    candleSeries.setData(candlesticks);
 
     chartRef.current = chart;
     seriesRef.current = candleSeries;
   };
 
+  // バックエンドから取得 → チャートにセット
+  const loadFromBackend = async () => {
+    if (!backendFile) return;
+
+    const url = `${BACKEND_BASE}/candles?file=${encodeURIComponent(
+      backendFile,
+    )}&limit=2000`;
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error('Backend error:', await res.text());
+      return;
+    }
+    const json = await res.json();
+
+    const candles: CandlestickData[] = (json.candles ?? []).map((d: any) => ({
+      time: Number(d.time) as UTCTimestamp, // FastAPIはepoch秒で返す設計
+      open: Number(d.open),
+      high: Number(d.high),
+      low: Number(d.low),
+      close: Number(d.close),
+    }));
+
+    if (!candles.length) {
+      console.warn('No candles from backend');
+      return;
+    }
+
+    if (!seriesRef.current) {
+      createOrResetChart();
+    }
+    seriesRef.current?.setData(candles);
+  };
+
+  // リサイズ対応（あなたの実装に合わせて）
   useEffect(() => {
     const handleResize = () => {
       if (chartRef.current && chartContainerRef.current) {
@@ -111,14 +141,20 @@ export default function Home() {
       }
     };
 
+    // 初回にチャート作成（空のシリーズ）
+    createOrResetChart();
+
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <main className="flex min-h-screen items-stretch justify-start p-6 bg-gray-50 text-gray-800">
+      {/* 左カラム：GUI */}
       <section className="flex flex-col gap-4 p-6 bg-white rounded-lg shadow-md w-[280px]">
         <h2 className="text-lg font-semibold border-b pb-2">設定</h2>
+
         <div className="flex flex-col gap-1.5">
           <label className="text-sm font-medium text-gray-600">通貨ペア</label>
           <Select value={symbol} onValueChange={setSymbol}>
@@ -134,6 +170,7 @@ export default function Home() {
             </SelectContent>
           </Select>
         </div>
+
         <div className="flex flex-col gap-1.5">
           <label className="text-sm font-medium text-gray-600">時間足</label>
           <Select value={timeframe} onValueChange={setTimeframe}>
@@ -149,21 +186,26 @@ export default function Home() {
             </SelectContent>
           </Select>
         </div>
+
+        {/* バックエンドCSV指定 */}
         <div className="flex flex-col gap-1.5">
-          <label className="text-sm font-medium text-gray-600">CSVファイル</label>
-          <div className="flex flex-col gap-2">
+          <label className="text-sm font-medium text-gray-600">CSV（backend/data）</label>
+          <div className="flex gap-2">
             <Input
-              type="file"
-              accept=".csv"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
-              className="file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+              type="text"
+              value={backendFile}
+              onChange={(e) => setBackendFile(e.target.value)}
+              placeholder="NSDQ_M1_2025-07-01-4.csv"
             />
-            <Button onClick={handleCSVRead}>
-              チャート表示
-            </Button>
+            <Button onClick={loadFromBackend}>表示</Button>
           </div>
+          <p className="text-xs text-gray-500">
+            FastAPI 側: <code>/candles?file=&lt;ファイル名&gt;</code> に対応
+          </p>
         </div>
       </section>
+
+      {/* 右カラム：チャート */}
       <section className="flex-1 ml-6 bg-white rounded-lg shadow-md p-2">
         <div ref={chartContainerRef} className="w-full h-full min-h-[500px]" />
       </section>
