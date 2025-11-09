@@ -78,13 +78,7 @@ def _resolve_csv(symbol: str, timeframe: str) -> Path:
     return candidates[0]
 
 # ---------------- Load & transform ----------------
-
-def _coerce_epoch_seconds(col: pd.Series) -> pd.Series:
-    s = pd.to_numeric(col, errors="coerce")
-    s = np.where(s > 1e12, s // 1000, s)  # ms→s
-    return pd.to_numeric(s, errors="coerce")
-
-def _jst2timestamp(df: pd.DataFrame) ->[int]:
+def _jststr2timestamp(df: pd.DataFrame) ->[int]:
     timestamp = []
     for t_str in df['jst']:
         dt = datetime.fromisoformat(t_str)
@@ -105,17 +99,7 @@ def _load_ohlc_from_file(csv_path: Path) -> pd.DataFrame:
 
     # normalize column names to lower
     df = df.rename(columns={c: c.lower() for c in df.columns})
-
-    ts = _build_timestamp_series(df)
-    valid = ts.notna()
-    if valid.sum() == 0:
-        raise HTTPException(status_code=400, detail="Could not parse any timestamps from CSV")
-
-    df = df.loc[valid].copy()
-    ts_valid = ts[valid]
-
-    #epoch_utc = (ts[valid].astype("int64") // 10**9).astype("Int64")
-    df["time"] = _jst2timestamp(df)
+    df["time"] = _jststr2timestamp(df)
 
     # ensure numeric OHLC
     for c in ("open", "high", "low", "close"):
