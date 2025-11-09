@@ -46,7 +46,7 @@ const TIMEFRAMES: Record<string, string> = {
 const INDICATORS = {
   ema20: { name: 'ema', period: 20, color: '#0ea5e9', chart: 0 },
   ema50: { name: 'ema', period: 50, color: '#a855f7', chart: 0 },
-  rsi14: { name: 'rsi', period: 14, color: '#111827', chart: 1 }, // ※バックエンド未実装ならスキップ表示
+  atr14: { name: 'atr', period: 14, color: '#111827', chart: 1 }, // ※バックエンド未実装ならスキップ表示
 } as const;
 type IndicatorKey = keyof typeof INDICATORS;
 type IndicatorCfg = (typeof INDICATORS)[IndicatorKey];

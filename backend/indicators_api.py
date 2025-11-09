@@ -34,7 +34,7 @@ def _dataset_key(symbol: str, timeframe: str) -> str:
     return f"{symbol.upper()}::{timeframe.lower()}"
 
 # 既定で事前計算するインジ（必要なら編集）
-DEFAULT_PRECOMPUTE = ["ema:20", "ema:50", "rsi:14"]
+DEFAULT_PRECOMPUTE = ["ema:20", "ema:50", "atr:14"]
 
 # ---------- JSON 安全 utility（Series -> [{time,value}]） ----------
 def _series_to_kv(time_s: pd.Series, val_s: pd.Series, dropna: bool = False) -> List[Dict[str, Any]]:
@@ -287,5 +287,19 @@ def get_indicator(
     series = _series_to_kv(df["time"], df[col], dropna=True)
     return {"name": token, "period": period, "values": series}
 
+
+def test1():    
+    df = retrieve_data('JP225', 'M1', 500, how='csv')
+    print(df)
+
+def test2():
+    pass
+
+def main():
+    pass    
+
+
+if __name__ == '__main__':
+    test1()
 # 起動例:
 # uvicorn backend.indicators_api:app --reload --port 8000
