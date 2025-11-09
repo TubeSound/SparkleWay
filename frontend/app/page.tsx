@@ -1,13 +1,14 @@
 // app/page.tsx
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   IChartApi,
   ISeriesApi,
   UTCTimestamp,
   CandlestickData,
   LineData,
+  Time,
 } from 'lightweight-charts';
 import {
   createChart,
@@ -41,121 +42,98 @@ const TIMEFRAMES: Record<string, string> = {
   '1d': '日足',
 };
 
-// 表示するインジ名と色（バックエンド側は name/period で応答）
+// ←ここをユーザー指定に合わせて編集するだけでOK
 const INDICATORS = {
-  ema20: { name: 'ema', period: 20, color: '#0ea5e9' },
-  ema50: { name: 'ema', period: 50, color: '#a855f7' },
-  rsi14: { name: 'rsi', period: 14, color: '#111827' },
+  ema20: { name: 'ema', period: 20, color: '#0ea5e9', chart: 0 },
+  ema50: { name: 'ema', period: 50, color: '#a855f7', chart: 0 },
+  rsi14: { name: 'rsi', period: 14, color: '#111827', chart: 1 }, // ※バックエンド未実装ならスキップ表示
 } as const;
 type IndicatorKey = keyof typeof INDICATORS;
+type IndicatorCfg = (typeof INDICATORS)[IndicatorKey];
 
 export default function Home() {
   const [symbol, setSymbol] = useState<string>('JP225');
   const [timeframe, setTimeframe] = useState<string>('1m');
   const [length, setLength] = useState<number>(2000);
-  const [enabled, setEnabled] = useState<Record<IndicatorKey, boolean>>({
-    ema20: true,
-    ema50: true,
-    rsi14: false,
+
+  // トグル初期値（chart=0はtrue、chart=1はfalse開始にしてみる）
+  const [enabled, setEnabled] = useState<Record<IndicatorKey, boolean>>(() => {
+    const init = {} as Record<IndicatorKey, boolean>;
+    (Object.keys(INDICATORS) as IndicatorKey[]).forEach((k) => {
+      init[k] = INDICATORS[k].chart === 0;
+    });
+    return init;
   });
 
-  // ---- チャート参照 ----
-  const chartContainerRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
-  const lineSeriesRef = useRef<Partial<Record<IndicatorKey, ISeriesApi<'Line'>>>>({});
+  // ---- チャート参照（0=メイン, 1=サブ）----
+  const mainContainerRef = useRef<HTMLDivElement | null>(null);
   const subContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const mainChartRef = useRef<IChartApi | null>(null);
   const subChartRef = useRef<IChartApi | null>(null);
-  const subSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
 
-  // 1) 先頭の方でフォーマッタを用意
-  const jstFormatter = new Intl.DateTimeFormat('ja-JP', {
-    timeZone: 'Asia/Tokyo',
-    year: '2-digit',
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const lineSeriesByKey = useRef<Partial<Record<IndicatorKey, ISeriesApi<'Line'>>>>({});
 
-  // BusinessDay or UTCTimestampの両方を受けてJST文字列にする関数
-  function formatTimeJST(t: import('lightweight-charts').Time): string {
-    if (typeof t === 'number') {
-      // UTCTimestamp（秒） -> Date -> JST表示
-      return jstFormatter.format(new Date(t * 1000));
-    } else {
-      // BusinessDay -> UTC midnight -> JST表示
-      const ms = Date.UTC(t.year, t.month - 1, t.day);
-      return jstFormatter.format(new Date(ms));
-    }
-  }
+  // --- JSTのフォーマッタ群 ---
+  const jstTickFmt = useMemo(
+    () =>
+      new Intl.DateTimeFormat('ja-JP', {
+        timeZone: 'Asia/Tokyo',
+        hour12: false,
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    [],
+  );
+  const jstFullFmt = useMemo(
+    () =>
+      new Intl.DateTimeFormat('ja-JP', {
+        timeZone: 'Asia/Tokyo',
+        hour12: false,
+        year: '2-digit',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      }),
+    [],
+  );
 
-  // 追加：JSTフォーマッタ
-  const jstLabelFmt = new Intl.DateTimeFormat('ja-JP', {
-    timeZone: 'Asia/Tokyo',
-    hour12: false,
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-
-  const jstFullFmt = new Intl.DateTimeFormat('ja-JP', {
-    timeZone: 'Asia/Tokyo',
-    hour12: false,
-    year: '2-digit',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-
-  // UTCTimestamp or BusinessDay → Date に変換（v5想定）
-  function timeToDate(t: any): Date {
-    if (typeof t === 'number') return new Date(t * 1000);             // UTCTimestamp (sec)
-    // BusinessDay { year, month, day } の場合（UTC基準でDate作成）
-    return new Date(Date.UTC(t.year, (t.month ?? t.mon ?? t.m ?? 1) - 1, t.day));
-  }
-
+  const timeToDate = (t: Time): Date => {
+    if (typeof t === 'number') return new Date(t * 1000);
+    // BusinessDay -> UTC 00:00
+    return new Date(Date.UTC(t.year, (t as any).month - 1, t.day));
+  };
+  const formatTimeJST = (t: Time) => jstFullFmt.format(timeToDate(t));
 
   // ---- 初期化 ----
   useEffect(() => {
-    if (!chartContainerRef.current) return;
-
-    const chart = createChart(chartContainerRef.current, {
+    // メインチャート
+    if (!mainContainerRef.current) return;
+    const main = createChart(mainContainerRef.current, {
       height: 520,
       layout: { background: { color: 'white' }, textColor: '#111827' },
       timeScale: { timeVisible: true, secondsVisible: true },
       rightPriceScale: { borderVisible: false },
       grid: { vertLines: { visible: false }, horzLines: { visible: true } },
-      localization: {
-        locale: 'ja-JP',
-        timeFormatter: formatTimeJST, // ★ここがポイント（JST表示）
-      },
+      localization: { locale: 'ja-JP', timeFormatter: formatTimeJST },
     });
-
-    chart.applyOptions({
+    // 目盛のラベル
+    main.applyOptions({
       timeScale: {
         timeVisible: true,
-        secondsVisible: true, // 1分足ならtrue推奨
-        // 目盛りラベル（X軸）
-        tickMarkFormatter: (t /* Time */, _tickMarkType, _locale) => {
-          const d = timeToDate(t);
-          return jstLabelFmt.format(d);    // 例: "06:00"
-        },
+        secondsVisible: true,
+        tickMarkFormatter: (t) => jstTickFmt.format(timeToDate(t)),
       },
-      // クロスヘアの吹き出し等
-      localization: {
-        timeFormatter: (t /* Time */) => {
-          const d = timeToDate(t);
-          return jstFullFmt.format(d);     // 例: "25/11/08 06:00:00"
-        },
-      },
+      localization: { timeFormatter: (t) => jstFullFmt.format(timeToDate(t)) },
     });
-    chartRef.current = chart;
+    mainChartRef.current = main;
 
-    // ★ v5: addSeries(CandlestickSeries, options)
-    const candle = chart.addSeries(CandlestickSeries, {
+    // ローソク
+    const candle = main.addSeries(CandlestickSeries, {
       upColor: '#22c55e',
       downColor: '#ef4444',
       borderUpColor: '#22c55e',
@@ -165,59 +143,35 @@ export default function Home() {
     });
     candleSeriesRef.current = candle;
 
-    // ★ v5: addSeries(LineSeries, options)
-    lineSeriesRef.current.ema20 = chart.addSeries(LineSeries, {
-      color: INDICATORS.ema20.color,
-      lineWidth: 2,
-    });
-    lineSeriesRef.current.ema50 = chart.addSeries(LineSeries, {
-      color: INDICATORS.ema50.color,
-      lineWidth: 2,
-    });
-
-    // RSI用のサブパネル
+    // サブチャート（必要なら）
     if (subContainerRef.current) {
-      const subChart = createChart(subContainerRef.current, {
+      const sub = createChart(subContainerRef.current, {
         height: 160,
         layout: { background: { color: 'white' }, textColor: '#374151' },
         timeScale: { timeVisible: true, secondsVisible: true },
         rightPriceScale: { borderVisible: false },
         grid: { vertLines: { visible: false }, horzLines: { visible: true } },
-        localization: {
-          locale: 'ja-JP',
-          timeFormatter: formatTimeJST, // ★ここがポイント（JST表示）
-        },
+        localization: { locale: 'ja-JP', timeFormatter: formatTimeJST },
       });
-      subChart.applyOptions({
+      sub.applyOptions({
         timeScale: {
           timeVisible: true,
-          secondsVisible: true, // 1分足ならtrue推奨
-          // 目盛りラベル（X軸）
-          tickMarkFormatter: (t /* Time */, _tickMarkType, _locale) => {
-            const d = timeToDate(t);
-            return jstLabelFmt.format(d);    // 例: "06:00"
-          },
+          secondsVisible: true,
+          tickMarkFormatter: (t) => jstTickFmt.format(timeToDate(t)),
         },
-        // クロスヘアの吹き出し等
-        localization: {
-          timeFormatter: (t /* Time */) => {
-            const d = timeToDate(t);
-            return jstFullFmt.format(d);     // 例: "25/11/08 06:00:00"
-          },
-        },
+        localization: { timeFormatter: (t) => jstFullFmt.format(timeToDate(t)) },
       });
-
-      subChartRef.current = subChart;
-      subSeriesRef.current = subChart.addSeries(LineSeries, {
-        color: INDICATORS.rsi14.color,
-        lineWidth: 1,
-      });
+      subChartRef.current = sub;
     }
 
-
+    // 画面サイズ対応
     const handleResize = () => {
-      chart.applyOptions({ width: chartContainerRef.current!.clientWidth });
-      if (subChartRef.current && subContainerRef.current) {
+      if (mainContainerRef.current && mainChartRef.current) {
+        mainChartRef.current.applyOptions({
+          width: mainContainerRef.current.clientWidth,
+        });
+      }
+      if (subContainerRef.current && subChartRef.current) {
         subChartRef.current.applyOptions({
           width: subContainerRef.current.clientWidth,
         });
@@ -225,12 +179,27 @@ export default function Home() {
     };
     handleResize();
     window.addEventListener('resize', handleResize);
+
     return () => {
       window.removeEventListener('resize', handleResize);
-      chart.remove();
       subChartRef.current?.remove();
+      main.remove();
     };
   }, []);
+
+  // 指定チャートにラインシリーズを用意（なければ作る）
+  const ensureLineSeries = (key: IndicatorKey): ISeriesApi<'Line'> | null => {
+    if (lineSeriesByKey.current[key]) return lineSeriesByKey.current[key]!;
+    const cfg: IndicatorCfg = INDICATORS[key];
+    const targetChart = cfg.chart === 0 ? mainChartRef.current : subChartRef.current;
+    if (!targetChart) return null;
+    const s = targetChart.addSeries(LineSeries, {
+      color: cfg.color,
+      lineWidth: 2,
+    });
+    lineSeriesByKey.current[key] = s;
+    return s;
+  };
 
   // ---- データ取得 ----
   async function fetchCandles() {
@@ -238,11 +207,16 @@ export default function Home() {
     url.searchParams.set('symbol', symbol);
     url.searchParams.set('timeframe', timeframe);
     url.searchParams.set('length', String(length));
-    // 事前計算（サーバ側キャッシュ用）
-    const pre = [INDICATORS.ema20, INDICATORS.ema50, INDICATORS.rsi14]
-      .map((i) => `${i.name}:${i.period}`)
+
+    // 事前計算（サーバキャッシュ・任意：存在しない指標はサーバ側で400になるので除外）
+    const preTokens = (Object.keys(INDICATORS) as IndicatorKey[])
+      .filter((k) => enabled[k])
+      .map((k) => {
+        const c = INDICATORS[k];
+        return c.period ? `${c.name}:${c.period}` : c.name;
+      })
       .join(',');
-    url.searchParams.set('indicators', pre);
+    if (preTokens) url.searchParams.set('indicators', preTokens);
 
     const res = await fetch(url.toString());
     if (!res.ok) throw new Error(await res.text());
@@ -255,16 +229,20 @@ export default function Home() {
       low: Number(d.low),
       close: Number(d.close),
     }));
+
+    // 描画 & 右端寄せ（アニメなし）
     candleSeriesRef.current?.setData(candles);
+    mainChartRef.current?.timeScale().scrollToPosition(0, false);
+    subChartRef.current?.timeScale().scrollToPosition(0, false);
   }
 
   async function fetchIndicator(key: IndicatorKey) {
+    // トグルOFF → 既存線を空に
     if (!enabled[key]) {
-      // 消去
-      lineSeriesRef.current[key]?.setData([]);
-      if (key === 'rsi14') subSeriesRef.current?.setData([]);
+      lineSeriesByKey.current[key]?.setData([]);
       return;
     }
+
     const cfg = INDICATORS[key];
     const url = new URL('http://localhost:8000/indicator');
     url.searchParams.set('symbol', symbol);
@@ -273,15 +251,20 @@ export default function Home() {
     if (cfg.period) url.searchParams.set('period', String(cfg.period));
 
     const res = await fetch(url.toString());
-    if (!res.ok) throw new Error(await res.text());
-    const json = await res.json();
-    const series = (json.values ?? []) as LineData[];
-
-    if (key === 'rsi14') {
-      subSeriesRef.current?.setData(series);
-    } else {
-      lineSeriesRef.current[key]?.setData(series);
+    if (!res.ok) {
+      // たとえば ATR が未実装など、失敗しても他へ影響しないよう握りつぶし
+      console.warn('Indicator fetch failed:', key, await res.text());
+      return;
     }
+    const json = await res.json();
+    const seriesData = (json.values ?? []) as LineData[];
+
+    const s = ensureLineSeries(key);
+    s?.setData(seriesData);
+    // 右端寄せだけ
+    (cfg.chart === 0 ? mainChartRef.current : subChartRef.current)
+      ?.timeScale()
+      .scrollToPosition(0, false);
   }
 
   async function loadAll() {
@@ -292,6 +275,13 @@ export default function Home() {
     );
     await Promise.allSettled(tasks);
   }
+
+  // ラベルテキスト
+  const labelFor = (k: IndicatorKey) => {
+    const c = INDICATORS[k];
+    const base = c.name.toUpperCase();
+    return c.period ? `${base} ${c.period}` : base;
+  };
 
   return (
     <main className="flex min-h-screen items-start justify-start p-6 bg-gray-50">
@@ -343,46 +333,31 @@ export default function Home() {
           />
         </div>
 
-        {/* Toggles */}
+        {/* Toggles（INDICATORS から自動生成） */}
         <div className="mt-2 space-y-2">
-          <div className="flex items-center justify-between">
-            <Label htmlFor="ema20">EMA 20</Label>
-            <Switch
-              id="ema20"
-              checked={enabled.ema20}
-              onCheckedChange={(v) =>
-                setEnabled((p) => ({ ...p, ema20: v }))
-              }
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <Label htmlFor="ema50">EMA 50</Label>
-            <Switch
-              id="ema50"
-              checked={enabled.ema50}
-              onCheckedChange={(v) =>
-                setEnabled((p) => ({ ...p, ema50: v }))
-              }
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <Label htmlFor="rsi14">RSI 14</Label>
-            <Switch
-              id="rsi14"
-              checked={enabled.rsi14}
-              onCheckedChange={(v) =>
-                setEnabled((p) => ({ ...p, rsi14: v }))
-              }
-            />
-          </div>
+          {(Object.keys(INDICATORS) as IndicatorKey[]).map((k) => (
+            <div key={k} className="flex items-center justify-between">
+              <Label htmlFor={k}>
+                {labelFor(k)}
+                <span className="ml-2 text-xs text-gray-400">
+                  {INDICATORS[k].chart === 0 ? 'Main' : 'Sub'}
+                </span>
+              </Label>
+              <Switch
+                id={k}
+                checked={enabled[k]}
+                onCheckedChange={(v) => setEnabled((p) => ({ ...p, [k]: v }))}
+              />
+            </div>
+          ))}
         </div>
 
         <Button onClick={loadAll}>Load</Button>
       </section>
 
-      {/* Chart */}
+      {/* Charts */}
       <section className="flex-1 ml-6 bg-white rounded-lg shadow-md p-4">
-        <div ref={chartContainerRef} className="w-full h-[520px]" />
+        <div ref={mainContainerRef} className="w-full h-[520px]" />
         <div className="mt-2" />
         <div ref={subContainerRef} className="w-full h-[160px]" />
       </section>
