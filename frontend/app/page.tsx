@@ -31,15 +31,15 @@ import {
 // ---------- UI 設定 ----------
 const SYMBOLS: Record<string, string> = {
   JP225: 'JP225',
-  NASDAQ: 'NASDAQ',
-  USDJPY: 'USD/JPY',
+  NASDAQ: 'XAUUSD',
+  USDJPY: 'USDJPY',
 };
 const TIMEFRAMES: Record<string, string> = {
-  '1m': '1分',
-  '5m': '5分',
-  '15m': '15分',
-  '1h': '1時間',
-  '1d': '日足',
+  'M1': '1分',
+  'M5': '5分',
+  'M15': '15分',
+  'H1': '1時間',
+  'D1': '日足',
 };
 
 // ←ここをユーザー指定に合わせて編集するだけでOK
@@ -53,7 +53,7 @@ type IndicatorCfg = (typeof INDICATORS)[IndicatorKey];
 
 export default function Home() {
   const [symbol, setSymbol] = useState<string>('JP225');
-  const [timeframe, setTimeframe] = useState<string>('1m');
+  const [timeframe, setTimeframe] = useState<string>('M1');
   const [length, setLength] = useState<number>(2000);
 
   // トグル初期値（chart=0はtrue、chart=1はfalse開始にしてみる）
