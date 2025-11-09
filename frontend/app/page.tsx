@@ -90,6 +90,32 @@ export default function Home() {
     }
   }
 
+  // 追加：JSTフォーマッタ
+  const jstLabelFmt = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+
+  const jstFullFmt = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    hour12: false,
+    year: '2-digit',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+
+  // UTCTimestamp or BusinessDay → Date に変換（v5想定）
+  function timeToDate(t: any): Date {
+    if (typeof t === 'number') return new Date(t * 1000);             // UTCTimestamp (sec)
+    // BusinessDay { year, month, day } の場合（UTC基準でDate作成）
+    return new Date(Date.UTC(t.year, (t.month ?? t.mon ?? t.m ?? 1) - 1, t.day));
+  }
+
 
   // ---- 初期化 ----
   useEffect(() => {
@@ -104,6 +130,25 @@ export default function Home() {
       localization: {
         locale: 'ja-JP',
         timeFormatter: formatTimeJST, // ★ここがポイント（JST表示）
+      },
+    });
+
+    chart.applyOptions({
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: true, // 1分足ならtrue推奨
+        // 目盛りラベル（X軸）
+        tickMarkFormatter: (t /* Time */, _tickMarkType, _locale) => {
+          const d = timeToDate(t);
+          return jstLabelFmt.format(d);    // 例: "06:00"
+        },
+      },
+      // クロスヘアの吹き出し等
+      localization: {
+        timeFormatter: (t /* Time */) => {
+          const d = timeToDate(t);
+          return jstFullFmt.format(d);     // 例: "25/11/08 06:00:00"
+        },
       },
     });
     chartRef.current = chart;
@@ -142,12 +187,32 @@ export default function Home() {
           timeFormatter: formatTimeJST, // ★ここがポイント（JST表示）
         },
       });
+      rsiChart.applyOptions({
+        timeScale: {
+          timeVisible: true,
+          secondsVisible: true, // 1分足ならtrue推奨
+          // 目盛りラベル（X軸）
+          tickMarkFormatter: (t /* Time */, _tickMarkType, _locale) => {
+            const d = timeToDate(t);
+            return jstLabelFmt.format(d);    // 例: "06:00"
+          },
+        },
+        // クロスヘアの吹き出し等
+        localization: {
+          timeFormatter: (t /* Time */) => {
+            const d = timeToDate(t);
+            return jstFullFmt.format(d);     // 例: "25/11/08 06:00:00"
+          },
+        },
+      });
+
       rsiChartRef.current = rsiChart;
       rsiSeriesRef.current = rsiChart.addSeries(LineSeries, {
         color: INDICATORS.rsi14.color,
         lineWidth: 1,
       });
     }
+
 
     const handleResize = () => {
       chart.applyOptions({ width: chartContainerRef.current!.clientWidth });
