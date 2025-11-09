@@ -64,9 +64,9 @@ export default function Home() {
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const lineSeriesRef = useRef<Partial<Record<IndicatorKey, ISeriesApi<'Line'>>>>({});
-  const rsiContainerRef = useRef<HTMLDivElement | null>(null);
-  const rsiChartRef = useRef<IChartApi | null>(null);
-  const rsiSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const subContainerRef = useRef<HTMLDivElement | null>(null);
+  const subChartRef = useRef<IChartApi | null>(null);
+  const subSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
 
   // 1) 先頭の方でフォーマッタを用意
   const jstFormatter = new Intl.DateTimeFormat('ja-JP', {
@@ -94,6 +94,7 @@ export default function Home() {
   const jstLabelFmt = new Intl.DateTimeFormat('ja-JP', {
     timeZone: 'Asia/Tokyo',
     hour12: false,
+    day: '2-digit',
     hour: '2-digit',
     minute: '2-digit'
   });
@@ -175,8 +176,8 @@ export default function Home() {
     });
 
     // RSI用のサブパネル
-    if (rsiContainerRef.current) {
-      const rsiChart = createChart(rsiContainerRef.current, {
+    if (subContainerRef.current) {
+      const subChart = createChart(subContainerRef.current, {
         height: 160,
         layout: { background: { color: 'white' }, textColor: '#374151' },
         timeScale: { timeVisible: true, secondsVisible: true },
@@ -187,7 +188,7 @@ export default function Home() {
           timeFormatter: formatTimeJST, // ★ここがポイント（JST表示）
         },
       });
-      rsiChart.applyOptions({
+      subChart.applyOptions({
         timeScale: {
           timeVisible: true,
           secondsVisible: true, // 1分足ならtrue推奨
@@ -206,8 +207,8 @@ export default function Home() {
         },
       });
 
-      rsiChartRef.current = rsiChart;
-      rsiSeriesRef.current = rsiChart.addSeries(LineSeries, {
+      subChartRef.current = subChart;
+      subSeriesRef.current = subChart.addSeries(LineSeries, {
         color: INDICATORS.rsi14.color,
         lineWidth: 1,
       });
@@ -216,9 +217,9 @@ export default function Home() {
 
     const handleResize = () => {
       chart.applyOptions({ width: chartContainerRef.current!.clientWidth });
-      if (rsiChartRef.current && rsiContainerRef.current) {
-        rsiChartRef.current.applyOptions({
-          width: rsiContainerRef.current.clientWidth,
+      if (subChartRef.current && subContainerRef.current) {
+        subChartRef.current.applyOptions({
+          width: subContainerRef.current.clientWidth,
         });
       }
     };
@@ -227,7 +228,7 @@ export default function Home() {
     return () => {
       window.removeEventListener('resize', handleResize);
       chart.remove();
-      rsiChartRef.current?.remove();
+      subChartRef.current?.remove();
     };
   }, []);
 
@@ -261,7 +262,7 @@ export default function Home() {
     if (!enabled[key]) {
       // 消去
       lineSeriesRef.current[key]?.setData([]);
-      if (key === 'rsi14') rsiSeriesRef.current?.setData([]);
+      if (key === 'rsi14') subSeriesRef.current?.setData([]);
       return;
     }
     const cfg = INDICATORS[key];
@@ -277,7 +278,7 @@ export default function Home() {
     const series = (json.values ?? []) as LineData[];
 
     if (key === 'rsi14') {
-      rsiSeriesRef.current?.setData(series);
+      subSeriesRef.current?.setData(series);
     } else {
       lineSeriesRef.current[key]?.setData(series);
     }
@@ -383,7 +384,7 @@ export default function Home() {
       <section className="flex-1 ml-6 bg-white rounded-lg shadow-md p-4">
         <div ref={chartContainerRef} className="w-full h-[520px]" />
         <div className="mt-2" />
-        <div ref={rsiContainerRef} className="w-full h-[160px]" />
+        <div ref={subContainerRef} className="w-full h-[160px]" />
       </section>
     </main>
   );
