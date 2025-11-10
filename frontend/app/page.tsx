@@ -1,4 +1,3 @@
-// app/page.tsx
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -9,6 +8,7 @@ import type {
   CandlestickData,
   LineData,
   Time,
+  BusinessDay,
 } from 'lightweight-charts';
 import {
   createChart,
@@ -35,19 +35,20 @@ const SYMBOLS: Record<string, string> = {
   USDJPY: 'USDJPY',
 };
 const TIMEFRAMES: Record<string, string> = {
-  'M1': '1分',
-  'M5': '5分',
-  'M15': '15分',
-  'H1': '1時間',
-  'D1': '日足',
+  M1: '1分',
+  M5: '5分',
+  M15: '15分',
+  H1: '1時間',
+  D1: '日足',
 };
 
-// ←ここをユーザー指定に合わせて編集するだけでOK
+// インディケータ（点のみを描画したいので lineWidth:0 + pointMarkersVisible:true で描画）
 const INDICATORS = {
-  upper: { name: 'upper', color: '#ec0e8fff', chart: 0 },
-  lower: { name: 'lower', color: '#0aee0aff', chart: 0 },
-  atr: { name: 'atr', color: '#162df8ff', chart: 1 }, // ※バックエンド未実装ならスキップ表示
+  upper: { name: 'upper', color: '#e11d48', chart: 0, radius: 3 },
+  lower: { name: 'lower', color: '#10b981', chart: 0, radius: 3 },
+  atr: { name: 'atr', color: '#111827', chart: 1, radius: 2 }, // ※未実装ならサーバ側で404→握りつぶし
 } as const;
+
 type IndicatorKey = keyof typeof INDICATORS;
 type IndicatorCfg = (typeof INDICATORS)[IndicatorKey];
 
@@ -56,7 +57,7 @@ export default function Home() {
   const [timeframe, setTimeframe] = useState<string>('M1');
   const [length, setLength] = useState<number>(1000);
 
-  // トグル初期値（chart=0はtrue、chart=1はfalse開始にしてみる）
+  // トグル初期値（chart=0はtrue、chart=1はfalse開始）
   const [enabled, setEnabled] = useState<Record<IndicatorKey, boolean>>(() => {
     const init = {} as Record<IndicatorKey, boolean>;
     (Object.keys(INDICATORS) as IndicatorKey[]).forEach((k) => {
@@ -64,6 +65,7 @@ export default function Home() {
     });
     return init;
   });
+  const enabledJSON = useMemo(() => JSON.stringify(enabled), [enabled]);
 
   // ---- チャート参照（0=メイン, 1=サブ）----
   const mainContainerRef = useRef<HTMLDivElement | null>(null);
@@ -104,8 +106,8 @@ export default function Home() {
 
   const timeToDate = (t: Time): Date => {
     if (typeof t === 'number') return new Date(t * 1000);
-    // BusinessDay -> UTC 00:00
-    return new Date(Date.UTC(t.year, (t as any).month - 1, t.day));
+    const bd = t as BusinessDay;
+    return new Date(Date.UTC(bd.year, (bd as any).month - 1, bd.day));
   };
   const formatTimeJST = (t: Time) => jstFullFmt.format(timeToDate(t));
 
@@ -187,15 +189,19 @@ export default function Home() {
     };
   }, []);
 
-  // 指定チャートにラインシリーズを用意（なければ作る）
-  const ensureLineSeries = (key: IndicatorKey): ISeriesApi<'Line'> | null => {
+  // 指定チャートに“点だけシリーズ”を用意（なければ作る）
+  const ensureDotsSeries = (key: IndicatorKey): ISeriesApi<'Line'> | null => {
     if (lineSeriesByKey.current[key]) return lineSeriesByKey.current[key]!;
     const cfg: IndicatorCfg = INDICATORS[key];
     const targetChart = cfg.chart === 0 ? mainChartRef.current : subChartRef.current;
     if (!targetChart) return null;
     const s = targetChart.addSeries(LineSeries, {
       color: cfg.color,
-      lineWidth: 2,
+      lineWidth: 0, // 線は描かない
+      priceLineVisible: false,
+      lastValueVisible: false,
+      pointMarkersVisible: true, // 点のみ
+      pointMarkersRadius: cfg.radius ?? 2,
     });
     lineSeriesByKey.current[key] = s;
     return s;
@@ -208,13 +214,10 @@ export default function Home() {
     url.searchParams.set('timeframe', timeframe);
     url.searchParams.set('length', String(length));
 
-    // 事前計算（サーバキャッシュ・任意：存在しない指標はサーバ側で400になるので除外）
+    // 事前計算（サーバキャッシュ・任意）
     const preTokens = (Object.keys(INDICATORS) as IndicatorKey[])
       .filter((k) => enabled[k])
-      .map((k) => {
-        const c = INDICATORS[k];
-        return c.period ? `${c.name}:${c.period}` : c.name;
-      })
+      .map((k) => INDICATORS[k].name)
       .join(',');
     if (preTokens) url.searchParams.set('indicators', preTokens);
 
@@ -236,6 +239,17 @@ export default function Home() {
     subChartRef.current?.timeScale().scrollToPosition(0, false);
   }
 
+  // NaN/null を undefined に置換して線の連結を完全に断つ
+  const asDotsData = (seriesData: Array<{ time: number; value: number | null }>): LineData[] => {
+    return seriesData.map((d) => ({
+      time: d.time as UTCTimestamp,
+      value:
+        d.value === null || Number.isNaN(d.value as number)
+          ? (undefined as unknown as number)
+          : (d.value as number),
+    }));
+  };
+
   async function fetchIndicator(key: IndicatorKey) {
     // トグルOFF → 既存線を空に
     if (!enabled[key]) {
@@ -248,20 +262,17 @@ export default function Home() {
     url.searchParams.set('symbol', symbol);
     url.searchParams.set('timeframe', timeframe);
     url.searchParams.set('name', cfg.name);
-    if (cfg.period) url.searchParams.set('period', String(cfg.period));
 
     const res = await fetch(url.toString());
     if (!res.ok) {
-      // たとえば ATR が未実装など、失敗しても他へ影響しないよう握りつぶし
       console.warn('Indicator fetch failed:', key, await res.text());
       return;
     }
     const json = await res.json();
-    const seriesData = (json.values ?? []) as LineData[];
+    const raw = (json.values ?? []) as Array<{ time: number; value: number | null }>;
 
-    const s = ensureLineSeries(key);
-    s?.setData(seriesData);
-    // 右端寄せだけ
+    const s = ensureDotsSeries(key);
+    s?.setData(asDotsData(raw));
     (cfg.chart === 0 ? mainChartRef.current : subChartRef.current)
       ?.timeScale()
       .scrollToPosition(0, false);
@@ -276,12 +287,36 @@ export default function Home() {
     await Promise.allSettled(tasks);
   }
 
-  // ラベルテキスト
-  const labelFor = (k: IndicatorKey) => {
-    const c = INDICATORS[k];
-    const base = c.name.toUpperCase();
-    return c.period ? `${base} ${c.period}` : base;
-  };
+  // ===== 自動更新（10秒ポーリング） =====
+  const pollMs = 10_000; // 10sec
+  const loadingRef = useRef(false);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const runOnce = async () => {
+      if (loadingRef.current) return;
+      loadingRef.current = true;
+      try {
+        await loadAll();
+      } catch (e) {
+        console.error(e);
+      } finally {
+        loadingRef.current = false;
+      }
+    };
+
+    // 即時→周期実行
+    runOnce();
+    if (timerRef.current) window.clearInterval(timerRef.current);
+    timerRef.current = window.setInterval(runOnce, pollMs) as unknown as number;
+
+    return () => {
+      if (timerRef.current) window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    };
+  }, [symbol, timeframe, length, enabledJSON]);
+
+  const labelFor = (k: IndicatorKey) => INDICATORS[k].name.toUpperCase();
 
   return (
     <main className="flex min-h-screen items-start justify-start p-6 bg-gray-50">

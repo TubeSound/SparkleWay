@@ -221,7 +221,7 @@ def load_params(symbol, ver, volume, position_max):
         v = s[i + 1: j]
         return float(v)
     strategy = 'Montblanc'
-    print( os.getcwd())
+    #print( os.getcwd())
     path = f'./param/{strategy}_v{ver}_best_trade_params.xlsx'
     df = pd.read_excel(path)
     df = df[df['symbol'] == symbol]
@@ -235,7 +235,7 @@ def load_params(symbol, ver, volume, position_max):
     return params
 
 def _compute_indicators_mt5(symbol: str, df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame:
-    print('indicator ', df.columns, tokens)
+    #print('indicator ', df.columns, tokens)
     df_out = df.copy()
     params = load_params(symbol, "4.1", 0, 0)
     montblanc = Montblanc(symbol, params[0])
@@ -249,7 +249,7 @@ def _compute_indicators_mt5(symbol: str, df: pd.DataFrame, tokens: List[str]) ->
         elif token == 'atr':
             df_out['token'] = montblanc.atr
             
-    print(len(df_out), df_out.columns)
+    #print(len(df_out), df_out.columns)
     return df_out
    
 
