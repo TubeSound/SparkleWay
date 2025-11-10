@@ -45,9 +45,9 @@ const TIMEFRAMES: Record<string, string> = {
 
 // ========= インディケータ（点表示） =========
 const INDICATORS = {
-  upper: { name: 'upper', color: '#e11d48', chart: 0, radius: 3 },
-  lower: { name: 'lower', color: '#10b981', chart: 0, radius: 3 },
-  atr: { name: 'atr', color: '#111827', chart: 1, radius: 2 },
+  upper: { name: 'upper', color: '#eb9ae7ff', chart: 0, radius: 3 },
+  lower: { name: 'lower', color: '#88e9ecff', chart: 0, radius: 3 },
+  atr: { name: 'atr', color: '#044ed6ff', chart: 1, radius: 2 },
 } as const;
 
 type IndicatorKey = keyof typeof INDICATORS;
@@ -58,8 +58,8 @@ type IndicatorKey = keyof typeof INDICATORS;
 // shape: 'arrowUp'|'arrowDown'|'circle'|'square'
 // position: 'aboveBar'|'belowBar'|'inBar'
 const MARKERS = {
-  buy: { dataset: 'buy', color: '#1d4ff1ff', shape: 'arrowUp', position: 'belowBar', chart: 0 },
-  sell: { dataset: 'sell', color: '#b40606ff', shape: 'arrowDown', position: 'aboveBar', chart: 0 },
+  buy: { dataset: 'buy', color: '#3b82f6', shape: 'arrowUp', position: 'belowBar', chart: 0 },
+  sell: { dataset: 'sell', color: '#f0141fff', shape: 'arrowDown', position: 'aboveBar', chart: 0 },
 } as const;
 
 type MarkerKey = keyof typeof MARKERS;
@@ -83,7 +83,7 @@ export default function Page() {
   const [length, setLength] = useState<number>(1000);
 
   const [enabledIndi, setEnabledIndi] = useState<Record<IndicatorKey, boolean>>({ upper: true, lower: true, atr: true });
-  const [enabledMarker, setEnabledMarker] = useState<Record<MarkerKey, boolean>>({ last2: true });
+  const [enabledMarker, setEnabledMarker] = useState<Record<MarkerKey, boolean>>({ buy: true, sell: true });
 
   const enabledIndiJSON = useMemo(() => JSON.stringify(enabledIndi), [enabledIndi]);
   const enabledMarkerJSON = useMemo(() => JSON.stringify(enabledMarker), [enabledMarker]);
@@ -98,7 +98,7 @@ export default function Page() {
   const indiSeries = useRef<Partial<Record<IndicatorKey, ISeriesApi<'Line'>>>>({});
   const markerHostSeries = useRef<Partial<Record<MarkerKey, ISeriesApi<'Line'>>>>({});
 
-  // v5 markers: 直前に作った primitive を保持して remove 用に使う
+  // v5 markers: primitive を **一度だけ作成** し、以降は setMarkers で上書きする
   const mainMarkersPrimitive = useRef<ReturnType<typeof createSeriesMarkers> | null>(null);
   const subMarkersPrimitive = useRef<Partial<Record<MarkerKey, ReturnType<typeof createSeriesMarkers>>>>({});
 
@@ -175,9 +175,9 @@ export default function Page() {
     window.addEventListener('resize', handleResize);
     return () => {
       window.removeEventListener('resize', handleResize);
-      // マーカー primitive の掃除
-      mainMarkersPrimitive.current?.remove?.();
-      Object.values(subMarkersPrimitive.current).forEach((p) => p?.remove?.());
+      // primitive は setMarkers([]) で空にしておけば OK（detach 不要）
+      mainMarkersPrimitive.current?.setMarkers?.([] as any);
+      Object.values(subMarkersPrimitive.current).forEach((p) => p?.setMarkers?.([] as any));
       subChart.current?.remove();
       main.remove();
     };
@@ -260,15 +260,9 @@ export default function Page() {
 
   async function fetchMarkerDataset(k: MarkerKey) {
     if (!enabledMarker[k]) {
-      // 無効化 → 既存 primitive を消す
-      if (k in subMarkersPrimitive.current) {
-        subMarkersPrimitive.current[k]?.remove?.();
-        delete subMarkersPrimitive.current[k];
-      }
-      if (k === 'last2') {
-        mainMarkersPrimitive.current?.remove?.();
-        mainMarkersPrimitive.current = null;
-      }
+      // 無効化 → 空配列をセット
+      if (k in subMarkersPrimitive.current) subMarkersPrimitive.current[k]?.setMarkers?.([] as any);
+      if (k === 'last2') mainMarkersPrimitive.current?.setMarkers?.([] as any);
       return [] as MarkerItem[];
     }
 
@@ -287,14 +281,15 @@ export default function Page() {
       color: cfg.color,
       shape: (cfg as any).shape,
       position: (cfg as any).position,
-      // price: p.y, // position=inBar なので不要
     }));
 
     if (cfg.chart === 1) {
       const host = ensureMarkerHost(k);
-      // 以前のサブ・マーカを消して付け直し
-      subMarkersPrimitive.current[k]?.remove?.();
-      if (host) subMarkersPrimitive.current[k] = createSeriesMarkers(host, items as any);
+      if (host) {
+        // primitive を作って以降は setMarkers で上書き
+        if (!subMarkersPrimitive.current[k]) subMarkersPrimitive.current[k] = createSeriesMarkers(host, [] as any);
+        subMarkersPrimitive.current[k]?.setMarkers?.(items as any);
+      }
     }
 
     return items;
@@ -307,14 +302,12 @@ export default function Page() {
 
     // マーカー
     const all = await Promise.all((Object.keys(MARKERS) as MarkerKey[]).map((k) => fetchMarkerDataset(k)));
-    const mergedForMain = all.flat();
+    const mergedForMain = all.flat().filter((_, i, a) => !!a[i]);
 
-    // 既存 main のマーカ primitive を破棄して付け直し
+    // main 側の primitive は一度だけ作成 → setMarkers で差し替え
     if (candleSeries.current) {
-      mainMarkersPrimitive.current?.remove?.();
-      if (mergedForMain.length) {
-        mainMarkersPrimitive.current = createSeriesMarkers(candleSeries.current, mergedForMain as any);
-      }
+      if (!mainMarkersPrimitive.current) mainMarkersPrimitive.current = createSeriesMarkers(candleSeries.current, [] as any);
+      mainMarkersPrimitive.current.setMarkers?.(mergedForMain as any);
     }
   }
 

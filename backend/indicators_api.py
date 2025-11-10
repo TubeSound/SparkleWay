@@ -216,17 +216,23 @@ def _compute_indicators_csv(symbol, df: pd.DataFrame, tokens: List[str]) -> pd.D
     return df
 
 # マーカー生成
-def _build_last2_close_markers(df: pd.DataFrame) -> List[Dict[str, Any]]:
+def build_signal_markers(df: pd.DataFrame) -> (List[Dict[str, Any]], List[Dict[str, Any]]):
     """df 末尾2本の close を (time, y, type='dot') で返す"""
     if df is None or df.empty:
-        return []
-    tail = df.tail(2)
-    out: List[Dict[str, Any]] = []
-    for _, row in tail.iterrows():
-        t = int(row["time"])
-        y = float(row["close"])
-        out.append({"time": t, "y": y, "type": "dot"})
-    return out
+        return [], []
+    time = df['time'].to_list()
+    entries = df['entries'].to_list()
+    cl = df['close'].to_list()
+    buy: List[Dict[str, Any]] = []
+    sell: List[Dict[str, Any]] = []
+    for t, c, e in zip(time, cl, entries):
+        t = int(t)
+        y = float(c)
+        if e == 1:
+            buy.append({"time": t, "y": y, "type": "dot"})
+        elif e == -1:
+            sell.append({"time": t, "y": y, "type": "dot"})
+    return buy, sell
 
 def load_params(symbol, ver, volume, position_max):
     def array_str2int(s):
@@ -332,10 +338,12 @@ def get_candles(
         
     # --- 最後2本の終値マーカーを生成してキャッシュ ---
     key = _dataset_key(symbol, timeframe)  # 既存で使っているキー
-    last2_points = _build_last2_close_markers(df)         # df は length 減衰後の返却データ
+    buy, sell = build_signal_markers(df)
     CACHE[key] = CACHE.get(key, {})
     CACHE[key].setdefault("marker_points", {})
-    CACHE[key]["marker_points"]["buy"] = last2_points   # dataset 名は 'last2'
+    CACHE[key]["marker_points"]["buy"] = buy
+    CACHE[key]["marker_points"]["sell"] = sell
+    
 
     candles = df[["time", "open", "high", "low", "close"]].to_dict(orient="records")
     indicator_cols = [c for c in df.columns if c not in ("time", "open", "high", "low", "close")]
@@ -377,12 +385,12 @@ def get_indicator(
 def get_markers(
     symbol: str = Query(...),
     timeframe: str = Query(...),
-    dataset: Optional[str] = Query("buy", description="マーカーデータ名。既定は 'last2'"),
+    dataset: Optional[str] = Query("buy", description="マーカーデータ名"),
 ):
     key = _dataset_key(symbol, timeframe)
     if key not in CACHE or "marker_points" not in CACHE[key]:
         return {"dataset": dataset, "points": []}
-    points = CACHE[key]["marker_points"].get(dataset or "last2", [])
+    points = CACHE[key]["marker_points"].get(dataset or "buy", [])
     # 形式: [{time: epochSec, y: number, type: 'dot'|...}]
     return {"dataset": dataset or "buy", "points": points}
 
