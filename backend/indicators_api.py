@@ -44,7 +44,9 @@ def _dataset_key(symbol: str, timeframe: str) -> str:
     return f"{symbol.upper()}::{timeframe.lower()}"
 
 # 既定の事前計算インジ（フロントと合わせて小文字トークンで統一）
-DEFAULT_PRECOMPUTE = ["upper", "lower", "atr"]
+DEFAULT_PRECOMPUTE = ["upper", "lower", "atr", "entries", "exits"]
+
+
 
 # ---------- JSON 安全 utility（Series -> [{time,value}]） ----------
 def _series_to_kv(time_s: pd.Series, val_s: pd.Series, dropna: bool = False) -> List[Dict[str, Any]]:
@@ -213,6 +215,18 @@ def _compute_indicators_csv(symbol, df: pd.DataFrame, tokens: List[str]) -> pd.D
             continue
     return df
 
+# マーカー生成
+def _build_last2_close_markers(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """df 末尾2本の close を (time, y, type='dot') で返す"""
+    if df is None or df.empty:
+        return []
+    tail = df.tail(2)
+    out: List[Dict[str, Any]] = []
+    for _, row in tail.iterrows():
+        t = int(row["time"])
+        y = float(row["close"])
+        out.append({"time": t, "y": y, "type": "dot"})
+    return out
 
 def load_params(symbol, ver, volume, position_max):
     def array_str2int(s):
@@ -247,8 +261,11 @@ def _compute_indicators_mt5(symbol: str, df: pd.DataFrame, tokens: List[str]) ->
         elif token == 'lower':
             df_out[token] = montblanc.lower_line
         elif token == 'atr':
-            df_out['token'] = montblanc.atr
-            
+            df_out[token] = montblanc.atr
+        elif token == "entries":
+            df_out[token] = montblanc.entries
+        elif token == "exits":
+            df_out[token] = montblanc.exits
     #print(len(df_out), df_out.columns)
     return df_out
    
@@ -312,6 +329,13 @@ def get_candles(
         else:
             CACHE[key]["df"] = _compute_indicators_mt5(symbol, CACHE[key]["df"], more)
         df = CACHE[key]["df"].iloc[-length:].copy()
+        
+    # --- 最後2本の終値マーカーを生成してキャッシュ ---
+    key = _dataset_key(symbol, timeframe)  # 既存で使っているキー
+    last2_points = _build_last2_close_markers(df)         # df は length 減衰後の返却データ
+    CACHE[key] = CACHE.get(key, {})
+    CACHE[key].setdefault("marker_points", {})
+    CACHE[key]["marker_points"]["buy"] = last2_points   # dataset 名は 'last2'
 
     candles = df[["time", "open", "high", "low", "close"]].to_dict(orient="records")
     indicator_cols = [c for c in df.columns if c not in ("time", "open", "high", "low", "close")]
@@ -348,6 +372,20 @@ def get_indicator(
 
     series = _series_to_kv(df["time"], df[token], dropna=True)
     return {"name": token, "values": series}
+
+@app.get("/markers")
+def get_markers(
+    symbol: str = Query(...),
+    timeframe: str = Query(...),
+    dataset: Optional[str] = Query("buy", description="マーカーデータ名。既定は 'last2'"),
+):
+    key = _dataset_key(symbol, timeframe)
+    if key not in CACHE or "marker_points" not in CACHE[key]:
+        return {"dataset": dataset, "points": []}
+    points = CACHE[key]["marker_points"].get(dataset or "last2", [])
+    # 形式: [{time: epochSec, y: number, type: 'dot'|...}]
+    return {"dataset": dataset or "buy", "points": points}
+
 
 # 起動例:
 # uvicorn backend.indicators_api:app --reload --port 8000
