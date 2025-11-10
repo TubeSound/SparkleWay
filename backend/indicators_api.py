@@ -1,12 +1,22 @@
-# backend/indicators_api.py (CSV/MT5 別実装のインジ計算・DF一体キャッシュ版)
+# backend/indicators_api.py (トークン直指定版: 'ema20' / 'sma200' / 'atr' など)
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import pandas as pd
 import numpy as np
 import os
+import sys
 from datetime import datetime
+
+# ---- あなたのライブラリ (MT5 連携) ----
+sys.path.append(os.path.join(os.path.dirname(__file__), 'libs'))
+from common import Columns  # noqa: F401 (将来利用)
+from mt5_trade import Mt5Trade
+from montblanc import MontblancParam, Montblanc  # noqa: F401 (将来利用)
+
+mt5 = Mt5Trade(3, 2, 11, 1, 3.0)
+mt5.connect()
 
 app = FastAPI(title="SparkleWay CSV + MT5 Indicators API")
 
@@ -33,8 +43,8 @@ CACHE: Dict[str, Dict[str, Any]] = {}
 def _dataset_key(symbol: str, timeframe: str) -> str:
     return f"{symbol.upper()}::{timeframe.lower()}"
 
-# 既定で事前計算するインジ（必要なら編集）
-DEFAULT_PRECOMPUTE = ["ema:20", "ema:50", "atr:14"]
+# 既定の事前計算インジ（フロントと合わせて小文字トークンで統一）
+DEFAULT_PRECOMPUTE = ["ema20", "ema200", "atr"]
 
 # ---------- JSON 安全 utility（Series -> [{time,value}]） ----------
 def _series_to_kv(time_s: pd.Series, val_s: pd.Series, dropna: bool = False) -> List[Dict[str, Any]]:
@@ -82,7 +92,7 @@ def _jststr2timestamp(df: pd.DataFrame) -> List[int]:
     """CSVの 'jst'（ISO文字列, +09:00付き想定）→ UTC epoch 秒"""
     ts_list: List[int] = []
     for t_str in df["jst"]:
-        dt = datetime.fromisoformat(t_str)  # ex. 2025-11-08 06:00:00+09:00
+        dt = datetime.fromisoformat(t_str)  # 例: 2025-11-08 06:00:00+09:00
         ts_list.append(int(dt.timestamp()))  # UTC epoch
     return ts_list
 
@@ -103,7 +113,6 @@ def _load_ohlc_from_file(csv_path: Path) -> pd.DataFrame:
     if "jst" in df.columns:
         df["time"] = _jststr2timestamp(df)
     elif "time" in df.columns:
-        # time が epoch で来ている場合を許容
         df["time"] = pd.to_numeric(df["time"], errors="coerce").astype("Int64")
     else:
         raise HTTPException(status_code=400, detail="CSV must have 'jst' or 'time' column")
@@ -118,18 +127,28 @@ def _load_ohlc_from_file(csv_path: Path) -> pd.DataFrame:
 
 
 def _load_ohlc_from_mt5(symbol: str, timeframe: str, length: int) -> pd.DataFrame:
-    """
-    ★あなた実装ポイント★
-    - MetaTrader5 から `length` 本の TOHLCV を取得して DataFrame を返す
-    - 必須列: time(秒, UTC epoch), open, high, low, close
-    - 必要ならここで並び順・重複も整えること
-    """
-    raise NotImplementedError("Implement `_load_ohlc_from_mt5()` to fetch data from MetaTrader5")
+    """あなたの MT5 実装に合わせて取得。必須列: time(open/high/low/close)。
+    ここでは jst(datetime) を epoch(UTC秒) に変換して 'time' 列にする。"""
+    df = mt5.get_rates(symbol, timeframe, length)
+    timestamp = []
+    for jst in df['jst']:
+        timestamp.append(int(jst.timestamp()))
+    df['time'] = timestamp
+    # 必須列の存在を軽く保証
+    need = {"time", "open", "high", "low", "close"}
+    if not need.issubset(df.columns):
+        raise HTTPException(status_code=500, detail="MT5 data must contain time/open/high/low/close")
+    # ソート＋重複排除
+    df = df.sort_values("time").drop_duplicates(subset=["time"], keep="last").reset_index(drop=True)
+    return df[["time", "open", "high", "low", "close"]]
 
 # ---------------- インジ計算（共通プリミティブ） ----------------
 
 def _ema(series: pd.Series, period: int) -> pd.Series:
     return series.ewm(span=period, adjust=False).mean()
+
+def _sma(series: pd.Series, period: int) -> pd.Series:
+    return series.rolling(window=period, min_periods=period).mean()
 
 def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
@@ -142,7 +161,6 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
     return pd.Series(rsi, index=series.index)
 
 def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    # True Range
     prev_close = df["close"].shift(1)
     tr = pd.concat([
         df["high"] - df["low"],
@@ -151,25 +169,45 @@ def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     ], axis=1).max(axis=1)
     return tr.ewm(span=period, adjust=False).mean()
 
-SUPPORTED_INDICATORS = {"ema", "rsi", "atr"}
+# ---------------- トークン解釈 ----------------
+# 例: 'ema20' → ("ema", 20) / 'sma200' → ("sma", 200) / 'atr' → ("atr", 14) / 'atr14' → ("atr", 14)
+
+def _parse_token_simple(token: str) -> Tuple[str, Optional[int]]:
+    t = token.strip().lower()
+    if not t:
+        return "", None
+    if t.startswith("ema"):
+        p = int(t[3:]) if t[3:].isdigit() else 20
+        return "ema", p
+    if t.startswith("sma"):
+        p = int(t[3:]) if t[3:].isdigit() else 20
+        return "sma", p
+    if t.startswith("rsi"):
+        p = int(t[3:]) if t[3:].isdigit() else 14
+        return "rsi", p
+    if t.startswith("atr"):
+        p = int(t[3:]) if t[3:].isdigit() else 14
+        return "atr", p
+    return t, None
 
 # ---------------- インジ計算（CSV版 / MT5版） ----------------
 
 def _compute_indicators_csv(df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame:
-    """CSV 由来データに対するインジ計算（列として df に追加）"""
+    """CSV 由来データに対するインジ計算（列として df に **トークン名で** 追加）
+    例: 'ema20' 列, 'sma200' 列, 'atr' 列 など。"""
     for token in tokens:
-        t = token.strip().lower()
+        t = (token or "").strip().lower()
         if not t:
             continue
-        if t.startswith("ema:"):
-            p = int(t.split(":", 1)[1])
-            df[f"ema_{p}"] = _ema(df["close"], p)
-        elif t.startswith("rsi:"):
-            p = int(t.split(":", 1)[1])
-            df[f"rsi_{p}"] = _rsi(df["close"], p)
-        elif t.startswith("atr:"):
-            p = int(t.split(":", 1)[1])
-            df[f"atr_{p}"] = _atr(df, p)
+        name, period = _parse_token_simple(t)
+        if name == "ema" and period:
+            df[t] = _ema(df["close"], period)
+        elif name == "sma" and period:
+            df[t] = _sma(df["close"], period)
+        elif name == "rsi" and period:
+            df[t] = _rsi(df["close"], period)
+        elif name == "atr":
+            df[t] = _atr(df, period or 14)
         else:
             # 未対応はスキップ（必要なら raise）
             continue
@@ -177,11 +215,8 @@ def _compute_indicators_csv(df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame
 
 
 def _compute_indicators_mt5(df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame:
-    """MT5 由来データに対するインジ計算（列として df に追加）
-    ※ここはあなたが好きなロジック／ライブラリで差し替えてOK。
-    今は CSV と同等の計算をデフォルト実装として仮置き。
-    """
-    # TODO: あなたの MT5 計算ロジックに置換してね
+    """MT5 由来データに対するインジ計算（列として df に **トークン名で** 追加）
+    ※ここはあなたの独自実装で差し替えてOK。現状は CSV と同じ計算で仮置き。"""
     return _compute_indicators_csv(df, tokens)
 
 # ---------------- 包括 API: データ取得 + インジ計算 + キャッシュ ----------------
@@ -189,11 +224,11 @@ def _compute_indicators_mt5(df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame
 def retrieve_data(symbol: str, timeframe: str, length: int, how: str = "csv", precompute: Optional[List[str]] = None) -> pd.DataFrame:
     """
     1) TOHLC を取得（how='csv' or 'mt5'）
-    2) precompute のインジを **列として** 追加（データソースに応じた関数で）
+    2) precompute のトークン（'ema20', 'sma200', 'atr' など）を **列として** 追加
     3) 丸ごと DataFrame を CACHE に格納
     4) 末尾 length 本に制限して返却
     """
-    pre_tokens = precompute if precompute is not None else DEFAULT_PRECOMPUTE
+    pre_tokens = [t.strip().lower() for t in (precompute if precompute is not None else DEFAULT_PRECOMPUTE) if t.strip()]
 
     # 1) load
     if how == "csv":
@@ -225,27 +260,25 @@ def retrieve_data(symbol: str, timeframe: str, length: int, how: str = "csv", pr
 
 @app.get("/candles")
 def get_candles(
-    symbol: str = Query(..., description="シンボル例: JP225, NASDAQ, USDJPY など（ファイル名に含まれている語）"),
-    timeframe: str = Query(..., description="1m|5m|15m|1h|1d など"),
+    symbol: str = Query(..., description="シンボル例: JP225, XAUUSD, USDJPY など"),
+    timeframe: str = Query(..., description="1m|5m|15m|1h|1d / M1 など"),
     length: int = Query(2000, ge=1, le=200000, description="返すバー数（末尾から）"),
-    indicators: Optional[str] = Query(None, description="追加で事前計算するインジ。例: ema:20,ema:50,rsi:14,atr:14"),
-    how: str = Query("csv", description="'csv' or 'mt5'"),
+    indicators: Optional[str] = Query(None, description="追加で事前計算するインジ。例: ema20,ema200,atr,rsi14"),
+    how: str = Query("mt5", description="'csv' or 'mt5'"),
 ):
-    # まず retrieve で既定インジを DF 列として付与 → CACHE['df'] に丸ごと保存
+    # retrieve で既定インジを DF 列として付与 → CACHE['df'] に丸ごと保存
     df = retrieve_data(symbol, timeframe, length, how=how)
 
-    # 追加指定があれば上乗せ計算（DF列として追記し、CACHE も更新）
+    # 追加指定があれば上乗せ計算（トークンで列追記し、CACHE も更新）
     key = _dataset_key(symbol, timeframe)
     if indicators:
-        more = [t for t in indicators.split(',') if t.strip()]
+        more = [t.strip().lower() for t in indicators.split(',') if t.strip()]
         if how == "csv":
             CACHE[key]["df"] = _compute_indicators_csv(CACHE[key]["df"], more)
         else:
             CACHE[key]["df"] = _compute_indicators_mt5(CACHE[key]["df"], more)
-        # レスポンス DF にも反映
         df = CACHE[key]["df"].iloc[-length:].copy()
 
-    # 出力は従来通り OHLC のみ（互換性保持）。必要なら 'columns' メタを返す。
     candles = df[["time", "open", "high", "low", "close"]].to_dict(orient="records")
     indicator_cols = [c for c in df.columns if c not in ("time", "open", "high", "low", "close")]
     return {
@@ -253,7 +286,7 @@ def get_candles(
         "timeframe": timeframe,
         "length": len(candles),
         "candles": candles,
-        "columns": indicator_cols,  # 追加済みのインジ列名（例: ['ema_20','rsi_14']）
+        "columns": indicator_cols,  # 例: ['ema20','ema200','atr']
     }
 
 
@@ -261,45 +294,26 @@ def get_candles(
 def get_indicator(
     symbol: str = Query(...),
     timeframe: str = Query(...),
-    name: str = Query(..., description="インジ名: ema|rsi|atr"),
-    period: Optional[int] = Query(None, ge=1, description="期間: ema/rsi/atr 用"),
+    name: str = Query(..., description="インジトークン: ema20|sma200|rsi14|atr など。period パラメータは不要。"),
 ):
     key = _dataset_key(symbol, timeframe)
     if key not in CACHE or "df" not in CACHE[key]:
         raise HTTPException(status_code=404, detail="Candles not prepared. Call /candles first.")
 
     df = CACHE[key]["df"]
-    token = name.lower()
-    if token not in SUPPORTED_INDICATORS:
-        raise HTTPException(status_code=400, detail=f"Unsupported indicator: {name}")
+    token = (name or "").strip().lower()
+    if not token:
+        raise HTTPException(status_code=400, detail="'name' is required")
 
-    # 列名規約: ema_20, rsi_14, atr_14
-    if period is None:
-        raise HTTPException(status_code=400, detail=f"{token.upper()} requires 'period'")
-    col = f"{token}_{period}"
-
-    # なければここで追計算して列追加（CSV を既定とする。必要に応じ how を CACHE に保存して切替可）
-    if col not in df.columns:
-        # 既存 DF の由来（csv/mt5）を記録したければ、retrieve_data 内で CACHE[key]['source'] を持たせる実装にして切替
-        df = _compute_indicators_csv(df, [f"{token}:{period}"])  # デフォルト実装
+    if token not in df.columns:
+        # 未計算ならここで追計算（CSV版を既定。必要なら CACHE[key]['source'] を保持して出し分け）
+        df = _compute_indicators_csv(df, [token])
         CACHE[key]["df"] = df
+        if token not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Unsupported indicator token: {name}")
 
-    series = _series_to_kv(df["time"], df[col], dropna=True)
-    return {"name": token, "period": period, "values": series}
+    series = _series_to_kv(df["time"], df[token], dropna=True)
+    return {"name": token, "values": series}
 
-
-def test1():    
-    df = retrieve_data('JP225', 'M1', 500, how='csv')
-    print(df)
-
-def test2():
-    pass
-
-def main():
-    pass    
-
-
-if __name__ == '__main__':
-    test1()
 # 起動例:
 # uvicorn backend.indicators_api:app --reload --port 8000

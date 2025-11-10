@@ -31,7 +31,7 @@ import {
 // ---------- UI 設定 ----------
 const SYMBOLS: Record<string, string> = {
   JP225: 'JP225',
-  NASDAQ: 'XAUUSD',
+  XAUUSD: 'XAUUSD',
   USDJPY: 'USDJPY',
 };
 const TIMEFRAMES: Record<string, string> = {
@@ -44,9 +44,9 @@ const TIMEFRAMES: Record<string, string> = {
 
 // ←ここをユーザー指定に合わせて編集するだけでOK
 const INDICATORS = {
-  ema20: { name: 'ema', period: 20, color: '#0ea5e9', chart: 0 },
-  ema50: { name: 'ema', period: 50, color: '#a855f7', chart: 0 },
-  atr14: { name: 'atr', period: 14, color: '#111827', chart: 1 }, // ※バックエンド未実装ならスキップ表示
+  ema20: { name: 'ema20', color: '#0ea5e9', chart: 0 },
+  ema200: { name: 'EMA200', color: '#a855f7', chart: 0 },
+  atr: { name: 'atr', color: '#111827', chart: 1 }, // ※バックエンド未実装ならスキップ表示
 } as const;
 type IndicatorKey = keyof typeof INDICATORS;
 type IndicatorCfg = (typeof INDICATORS)[IndicatorKey];
@@ -54,7 +54,7 @@ type IndicatorCfg = (typeof INDICATORS)[IndicatorKey];
 export default function Home() {
   const [symbol, setSymbol] = useState<string>('JP225');
   const [timeframe, setTimeframe] = useState<string>('M1');
-  const [length, setLength] = useState<number>(2000);
+  const [length, setLength] = useState<number>(1000);
 
   // トグル初期値（chart=0はtrue、chart=1はfalse開始にしてみる）
   const [enabled, setEnabled] = useState<Record<IndicatorKey, boolean>>(() => {
