@@ -1,0 +1,405 @@
+
+import MetaTrader5 as mt5api
+import pandas as pd
+from dateutil import tz
+from datetime import datetime, timedelta
+import numpy as np
+from dateutil import tz
+from common import TimeFrame, Columns
+from time_utils import TimeUtils
+from trade_manager import PositionInfo, Signal
+JST = tz.gettz('Asia/Tokyo')
+UTC = tz.gettz('utc')  
+
+
+  
+        
+        
+def now():
+    t = datetime.now(tz=UTC)
+    return t
+
+# numpy timestamp -> pydatetime naive
+def nptimestamp2pydatetime(npdatetime):
+    unix_epoch = np.datetime64(0, "s")
+    one_second = np.timedelta64(1, "s")
+    seconds_since_epoch = (npdatetime - unix_epoch) / one_second
+    dt = datetime.utcfromtimestamp(seconds_since_epoch)
+    #timestamp = (npdatetime - np.datetime64('1970-01-01T00:00:00Z')) / np.timedelta64(1, 's')
+    #dt2 = datetime.utcfromtimestamp(timestamp)
+    return dt
+
+def jst2utc(jst: datetime): 
+    return jst.astimezone(UTC)
+
+def utc2jst(utc: datetime): 
+    return utc.astimezone(JST)
+
+def utcstr2datetime(utc_str: str, format='%Y-%m-%d %H:%M:%S'):
+    utc = datetime.strptime(utc_str, format)
+    utc = utc.replace(tzinfo=UTC)
+    return utc
+
+def slice(df, ibegin, iend):
+    new_df = df.iloc[ibegin: iend + 1, :]
+    return new_df
+
+def df2dic(df: pd.DataFrame):
+    dic = {}
+    for column in df.columns:
+        dic[column] = df[column].to_numpy()
+    return dic
+
+def time_str_2_datetime(df, time_column, format='%Y-%m-%d %H:%M:%S'):
+    time = df[time_column].to_numpy()
+    new_time = [datetime.strptime(t, format) for t in time]
+    df[time_column] = new_time
+    
+def position_dic_array(positions):
+    array = []
+    for position in positions:
+        d = {
+            'ticket': position.ticket,
+            'time': pd.to_datetime(position.time, unit='s'),
+            'symbol': position.symbol,
+            'type': position.type,
+            'volume': position.volume,
+            'price_open': position.price_open,
+            'sl': position.sl,
+            'tp': position.tp,
+            'price_current': position.price_current,
+            'profit': position.profit,
+            'swap': position.swap,
+            'comment': position.comment,
+            'magic': position.magic}
+        array.append(d)
+    return array
+
+
+    
+class Mt5Trade:
+    def __init__(self, begin_month, begin_sunday, end_month, end_sunday, delta_hour_from_gmt_in_summer):
+        self.set_sever_time(begin_month, begin_sunday, end_month, end_sunday, delta_hour_from_gmt_in_summer)
+        self.ticket = None
+        self.symbol = None
+        
+    def set_sever_time(self, begin_month, begin_sunday, end_month, end_sunday, delta_hour_from_gmt_in_summer):
+        now = datetime.now(JST)
+        dt, tz = TimeUtils.delta_hour_from_gmt(now, begin_month, begin_sunday, end_month, end_sunday, delta_hour_from_gmt_in_summer)
+        self.delta_hour_from_gmt  = dt
+        self.server_timezone = tz
+        print('SeverTime GMT+', dt, tz)
+        
+    @staticmethod
+    def connect():
+        if mt5api.initialize():
+            print('Connected to MT5 Version', mt5api.version())
+        else:
+            print('initialize() failed, error code = ', mt5api.last_error())
+            
+    def set_symbol(self, symbol):
+        self.symbol = symbol
+        
+    def parse_order_result(self, result, time: datetime, stoploss, takeprofit):
+        if result is None:
+            print('Error')
+            return False, None
+        
+        if takeprofit is None:
+            takeprofit = 0
+        code = result.retcode
+        if code == 10009:
+            #print("注文完了", self.symbol, 'type', result.request.type, 'volume', result.volume)
+            position_info = PositionInfo(self.symbol, result.request.type, time, result.volume, result.order, result.price, stoploss, takeprofit)
+            return True, position_info
+        elif code == 10013:
+            print("無効なリクエスト")
+            return False, None
+        elif code == 10018:
+            print("マーケットが休止中")
+            return False, None       
+        elif code == 10019:
+            print("リクエストを完了するのに資金が不充分。")
+            return False, None
+        else:
+            print('Entry error code', code)
+            return False, None
+        
+    def current_price(self, symbol, signal):
+        tick = mt5api.symbol_info_tick(symbol)
+        if signal == Signal.LONG:
+            return tick.ask
+        elif signal == Signal.SHORT:
+            return tick.bid 
+        else:
+            return None
+        
+    def entry(self, symbol, signal: Signal, time: datetime, volume:float, stoploss=None, takeprofit=0, deviation=20):        
+        #point = mt5api.symbol_info(self.symbol).point
+        price = self.current_price(symbol, signal)
+        if signal == Signal.LONG:
+            typ =  mt5api.ORDER_TYPE_BUY
+        elif signal == Signal.SHORT:
+            typ =  mt5api.ORDER_TYPE_SELL
+            
+        print('Entry symbol:', symbol, 'signal:', signal, 'Price:', price, 'volume:', volume, 'deviation:', deviation)
+            
+        request = {
+            "action": mt5api.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": float(volume),
+            "type": typ,
+            "price": float(price),
+            "deviation": deviation,# 許容スリップページ
+            "magic":  234000,
+            "comment": "python script open",
+            "type_time": mt5api.ORDER_TIME_GTC,
+            "type_filling": mt5api.ORDER_FILLING_IOC,
+        }
+
+        if stoploss > 0:
+            if signal == Signal.LONG:
+                request['sl'] = float(price - stoploss)
+            elif signal == Signal.SHORT:
+                request['sl'] = float(price + stoploss)
+        
+        if takeprofit is None:
+            takeprofit = 0
+        if takeprofit > 0:
+            if signal == Signal.LONG:
+                request['tp'] = float(price + takeprofit)
+            elif signal == Signal.SHORT:
+                request['tp'] = float(price - takeprofit)
+        result = mt5api.order_send(request)
+        #print('エントリー ', request)
+        return self.parse_order_result(result, time, stoploss, takeprofit)
+    
+    def get_positions(self, symbol):
+        positions = mt5api.positions_get(symbol=symbol)
+        if positions is None:
+            raise Exception('get position error')
+        return positions
+
+    def is_long(self, typ):
+        if typ == mt5api.ORDER_TYPE_BUY or typ == mt5api.ORDER_TYPE_BUY_LIMIT or typ == mt5api.ORDER_TYPE_BUY_STOP_LIMIT:
+            return True
+        else:
+            return False
+
+    def is_short(self, typ):
+        if typ == mt5api.ORDER_TYPE_SELL or typ == mt5api.ORDER_TYPE_SELL_LIMIT or typ == mt5api.ORDER_TYPE_SELL_STOP_LIMIT:
+            return True
+        else:
+            return False
+
+    def close_position(self, position, volume=None, deviation=20):
+        if volume is None:
+            volume = position.volume        
+        tick = mt5api.symbol_info_tick(position.symbol)
+        if self.is_long(position.type):
+            price = tick.bid
+            typ = mt5api.ORDER_TYPE_SELL
+        elif self.is_short(position.type):
+            price = tick.ask
+            typ = mt5api.ORDER_TYPE_BUY
+        return self.close(typ, position.ticket, price, volume, deviation=deviation)
+    
+    def close_order_result(self, info: PositionInfo, volume=None, deviation=20):
+        if volume is None:
+            volume = info.volume        
+        tick = mt5api.symbol_info_tick(info.symbol)
+        if self.is_long(info.type):
+            price = tick.bid
+            typ = mt5api.ORDER_TYPE_SELL
+        elif self.is_short(info.type):
+            price = tick.ask
+            typ = mt5api.ORDER_TYPE_BUY
+        return self.close(typ, info.ticket, price, volume, deviation=deviation)
+
+    def close_by_position_info(self, position_info: PositionInfo):
+        tick = mt5api.symbol_info_tick(position_info.symbol)            
+        if position_info.order_signal == Signal.LONG:
+            price = tick.bid
+            typ = mt5api.ORDER_TYPE_SELL
+        else:
+            price = tick.ask
+            typ = mt5api.ORDER_TYPE_BUY
+        return self.close(typ, position_info.ticket, price, position_info.volume)
+
+    def close(self, typ, ticket, price, volume, deviation=20):
+        request = {
+            "action": mt5api.TRADE_ACTION_DEAL,
+            "position": ticket,
+            "symbol": self.symbol,
+            "volume": volume,
+            "type": typ,
+            "price": price,
+            "deviation": deviation,
+            "magic": 100,
+            "comment": "python script close",
+            "type_time": mt5api.ORDER_TIME_GTC,
+            "type_filling": mt5api.ORDER_FILLING_IOC,
+        }
+        result = mt5api.order_send(request)
+        #print('決済', request)
+        return self.parse_order_result(result, None, None, None)
+    
+    def modify_sl(self, symbol, ticket, sl_price):
+        positions =self.get_positions(symbol)
+        found = False
+        for position in positions:
+            if position.ticket == ticket:
+                found = True
+                break
+        
+        if not found:
+            print('Not found', symbol, ticket)
+            return
+    
+        request = {
+            "action": mt5api.TRADE_ACTION_SLTP,
+            "symbol": symbol,
+            "position": ticket,
+            "sl": float(sl_price),
+            "tp": float(position.tp)
+        }
+        
+        result = mt5api.order_send(request)
+        #print('Set SL', request, result)
+        return self.parse_order_result(result, None, None, None)
+    
+    def close_all_position(self, symbol):
+        positions = self.get_positions(symbol)
+        for position in positions:
+            self.close_position(position, position.volume)
+    
+    def get_ticks_jst(self, jst_begin, jst_end):
+        t_begin = jst2utc(jst_begin)
+        t_end = jst2utc(jst_end)
+        return self.get_ticks(t_begin, t_end)
+
+    def get_ticks(self, symbol, utc_begin, utc_end):
+        ticks = mt5api.copy_ticks_range(symbol, utc_begin, utc_end, mt5api.COPY_TICKS_ALL)
+        return self.parse_ticks(ticks)    
+    
+    def get_ticks_from(self, symbol,  utc_time, length=10):
+        ticks = mt5api.copy_ticks_from(symbol, utc_time, length, mt5api.COPY_TICKS_ALL)
+        return self.parse_ticks(ticks)
+        
+    def parse_ticks(self, ticks):
+        df = pd.DataFrame(ticks)
+        df["time"] = pd.to_datetime(df["time"], unit='s')
+        return df
+    
+    def get_rates_jst(self, symbol, timeframe: TimeFrame, jst_begin, jst_end):
+        t_begin = jst2utc(jst_begin)
+        t_end = jst2utc(jst_end)
+        return self.get_rates_utc(symbol, timeframe, t_begin, t_end)
+    
+    def get_rates_utc(self, symbol, timeframe, utc_begin, utc_end):
+        rates = mt5api.copy_rates_range(symbol, TimeFrame.const(timeframe), utc_begin, utc_end)
+        return self.parse_rates(rates)
+        
+    def get_rates(self, symbol, timeframe: str, length: int):
+        #print(self.symbol, timeframe)
+        rates = mt5api.copy_rates_from_pos(symbol, TimeFrame.const(timeframe), 0, length)
+        if rates is None:
+            raise Exception('get_rates error')
+        return self.parse_rates(rates)
+
+
+    def severtime2utc(self, time):
+        return [t.replace(tzinfo=UTC) - self.delta_hour_from_gmt for t in time]
+
+    def parse_rates(self, rates):
+        df = pd.DataFrame(rates)
+        time = pd.to_datetime(df['time'], unit='s')
+        utc = self.severtime2utc(time)
+        df[Columns.UTC] = utc
+        jst = [utc2jst(t) for t in utc]
+        df[Columns.JST] = jst
+        return df
+    
+        
+class Mt5TradeSim:
+    def __init__(self, symbol: str, files: dict):
+        self.symbol = symbol
+        self.load_data(files)
+                
+    def adjust_msec(self, df, time_column, msec_column):
+        new_time = []
+        for t, tmsec in zip(df[time_column], df[msec_column]):
+            msec = tmsec % 1000
+            dt = t + timedelta(milliseconds= msec)
+            new_time.append(dt)
+        df[time_column] = new_time
+                
+    def load_data(self, files):
+        dic = {}
+        for timeframe, file in files.items():
+            df = pd.read_csv(file)
+            time_str_2_datetime(df, "time")
+            if timeframe == TimeFrame.TICK:
+                self.adjust_msec(df, "time", 'time_msc')
+            dic[timeframe] = df
+        self.dic = dic
+    
+    def search_in_time(self, df, time_column, utc_time_begin, utc_time_end):
+        time = list(df[time_column].values)
+        if utc_time_begin is None:
+            ibegin = 0
+        else:
+            ibegin = None
+        if utc_time_end is None:
+            iend = len(time) - 1
+        else:
+            iend = None
+        for i, t in enumerate(time):
+            dt = npdatetime2datetime(t)
+            if ibegin is None:
+                if dt >= utc_time_begin:
+                    ibegin = i
+            if iend is None:
+                if dt > utc_time_end:
+                    iend = i - 1
+            if ibegin is not None and iend is not None:
+                break
+        slilced = slice(df, ibegin, iend)
+        return slilced
+
+    def get_rates(self, timeframe: str, utc_begin, utc_end):
+        #print(self.symbol, timeframe)
+        df = self.dic[timeframe]
+        return self.search_in_time(df, "time", utc_begin, utc_end)
+
+    def get_ticks(self, utc_begin, utc_end):
+        df = self.dic[TimeFrame.TICK]
+        return self.search_in_time(df, "time", utc_begin, utc_end)
+
+def test1():
+    symbol = 'NIKKEI'
+    mt5trade1 = Mt5Trade(symbol)
+    mt5trade2 = Mt5Trade('DOW')
+    Mt5Trade.connect()
+    t = datetime.now().astimezone(JST)
+    ret, result = mt5trade1.entry(Signal.SHORT, 0, t, 0.1, stoploss=300.0)
+    if ret:
+        result.desc()
+    ret, result = mt5trade2.entry(Signal.LONG, 0, t, 0.1, stoploss=300.0)
+    if ret:
+        result.desc()
+    
+    
+    mt5trade.close_order_result(result, result.volume)
+    pass
+
+def test2():
+    trade = Mt5Trade(3, 2, 11, 1, 3.0)
+    trade.connect()
+    df = trade.get_rates('US100', 'M1', 3)
+    print(df[Columns.UTC], df[Columns.JST])
+    
+    
+    now = datetime.now()
+    trade.entry('US100', Signal.LONG, now, 0.01, 100, 100)
+
