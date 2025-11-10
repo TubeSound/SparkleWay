@@ -44,8 +44,8 @@ const TIMEFRAMES: Record<string, string> = {
 
 // ←ここをユーザー指定に合わせて編集するだけでOK
 const INDICATORS = {
-  upper: { name: 'upper', color: '#0eec46ff', chart: 0 },
-  lower: { name: 'lower', color: '#e40a0aff', chart: 0 },
+  upper: { name: 'upper', color: '#ec0e8fff', chart: 0 },
+  lower: { name: 'lower', color: '#0aee0aff', chart: 0 },
   atr: { name: 'atr', color: '#162df8ff', chart: 1 }, // ※バックエンド未実装ならスキップ表示
 } as const;
 type IndicatorKey = keyof typeof INDICATORS;
