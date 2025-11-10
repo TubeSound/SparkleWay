@@ -44,7 +44,7 @@ def _dataset_key(symbol: str, timeframe: str) -> str:
     return f"{symbol.upper()}::{timeframe.lower()}"
 
 # 既定の事前計算インジ（フロントと合わせて小文字トークンで統一）
-DEFAULT_PRECOMPUTE = ["ema20", "ema200", "atr"]
+DEFAULT_PRECOMPUTE = ["upper", "lower", "atr"]
 
 # ---------- JSON 安全 utility（Series -> [{time,value}]） ----------
 def _series_to_kv(time_s: pd.Series, val_s: pd.Series, dropna: bool = False) -> List[Dict[str, Any]]:
@@ -135,12 +135,12 @@ def _load_ohlc_from_mt5(symbol: str, timeframe: str, length: int) -> pd.DataFram
         timestamp.append(int(jst.timestamp()))
     df['time'] = timestamp
     # 必須列の存在を軽く保証
-    need = {"time", "open", "high", "low", "close"}
+    need = {"time", "jst", "open", "high", "low", "close"}
     if not need.issubset(df.columns):
         raise HTTPException(status_code=500, detail="MT5 data must contain time/open/high/low/close")
     # ソート＋重複排除
     df = df.sort_values("time").drop_duplicates(subset=["time"], keep="last").reset_index(drop=True)
-    return df[["time", "open", "high", "low", "close"]]
+    return df[["time", "jst", "open", "high", "low", "close"]]
 
 # ---------------- インジ計算（共通プリミティブ） ----------------
 
@@ -192,7 +192,7 @@ def _parse_token_simple(token: str) -> Tuple[str, Optional[int]]:
 
 # ---------------- インジ計算（CSV版 / MT5版） ----------------
 
-def _compute_indicators_csv(df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame:
+def _compute_indicators_csv(symbol, df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame:
     """CSV 由来データに対するインジ計算（列として df に **トークン名で** 追加）
     例: 'ema20' 列, 'sma200' 列, 'atr' 列 など。"""
     for token in tokens:
@@ -214,10 +214,44 @@ def _compute_indicators_csv(df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame
     return df
 
 
-def _compute_indicators_mt5(df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame:
-    """MT5 由来データに対するインジ計算（列として df に **トークン名で** 追加）
-    ※ここはあなたの独自実装で差し替えてOK。現状は CSV と同じ計算で仮置き。"""
-    return _compute_indicators_csv(df, tokens)
+def load_params(symbol, ver, volume, position_max):
+    def array_str2int(s):
+        i = s.find('[')
+        j = s.find(']')
+        v = s[i + 1: j]
+        return float(v)
+    strategy = 'Montblanc'
+    print( os.getcwd())
+    path = f'./param/{strategy}_v{ver}_best_trade_params.xlsx'
+    df = pd.read_excel(path)
+    df = df[df['symbol'] == symbol]
+    params = []
+    for i in range(len(df)):
+        row = df.iloc[i].to_dict()
+        param = MontblancParam.load_from_dic(row)
+        param.volume = volume
+        param.position_max = position_max
+        params.append(param)  
+    return params
+
+def _compute_indicators_mt5(symbol: str, df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame:
+    print('indicator ', df.columns, tokens)
+    df_out = df.copy()
+    params = load_params(symbol, "4.1", 0, 0)
+    montblanc = Montblanc(symbol, params[0])
+    montblanc.calc(df_out)    
+    for token in tokens:
+        token = token.strip().lower()
+        if token == 'upper':
+            df_out[token] = montblanc.upper_line
+        elif token == 'lower':
+            df_out[token] = montblanc.lower_line
+        elif token == 'atr':
+            df_out['token'] = montblanc.atr
+            
+    print(len(df_out), df_out.columns)
+    return df_out
+   
 
 # ---------------- 包括 API: データ取得 + インジ計算 + キャッシュ ----------------
 
@@ -241,9 +275,9 @@ def retrieve_data(symbol: str, timeframe: str, length: int, how: str = "csv", pr
 
     # 2) compute indicators (by source)
     if how == "csv":
-        df = _compute_indicators_csv(df, pre_tokens)
+        df = _compute_indicators_csv(symbol, df, pre_tokens)
     elif how == "mt5":
-        df = _compute_indicators_mt5(df, pre_tokens)
+        df = _compute_indicators_mt5(symbol, df, pre_tokens)
 
     # 3) cache whole df (full length before trim)
     key = _dataset_key(symbol, timeframe)
@@ -274,9 +308,9 @@ def get_candles(
     if indicators:
         more = [t.strip().lower() for t in indicators.split(',') if t.strip()]
         if how == "csv":
-            CACHE[key]["df"] = _compute_indicators_csv(CACHE[key]["df"], more)
+            CACHE[key]["df"] = _compute_indicators_csv(symbol, CACHE[key]["df"], more)
         else:
-            CACHE[key]["df"] = _compute_indicators_mt5(CACHE[key]["df"], more)
+            CACHE[key]["df"] = _compute_indicators_mt5(symbol, CACHE[key]["df"], more)
         df = CACHE[key]["df"].iloc[-length:].copy()
 
     candles = df[["time", "open", "high", "low", "close"]].to_dict(orient="records")
@@ -307,7 +341,7 @@ def get_indicator(
 
     if token not in df.columns:
         # 未計算ならここで追計算（CSV版を既定。必要なら CACHE[key]['source'] を保持して出し分け）
-        df = _compute_indicators_csv(df, [token])
+        df = _compute_indicators_csv(symbol, df, [token])
         CACHE[key]["df"] = df
         if token not in df.columns:
             raise HTTPException(status_code=400, detail=f"Unsupported indicator token: {name}")
@@ -317,3 +351,15 @@ def get_indicator(
 
 # 起動例:
 # uvicorn backend.indicators_api:app --reload --port 8000
+
+
+def test():
+    symbol = 'JP225'
+    df = retrieve_data(symbol, 'M1', 1000, how='mt5')
+    print(df.columns, len(df))
+    df_c = _compute_indicators_mt5(symbol, df, ['upper', 'lower', 'atr'])
+    print(df_c.columns, len(df_c))
+    
+
+if __name__ == "__main__":
+    test()

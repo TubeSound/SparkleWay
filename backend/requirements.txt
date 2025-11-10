@@ -6,3 +6,4 @@ numpy
 metatrader5
 scikit-learn
 matplotlib
+openpyxl

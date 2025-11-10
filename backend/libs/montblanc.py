@@ -141,6 +141,8 @@ class Montblanc:
                 Columns.LOW: self.lo,
                 Columns.CLOSE: self.cl,
                 Indicators.ATR: self.atr,
+                'upper': self.upper_line,
+                'lower': self.lower_line,
                 'trend': self.trend,
                 'trend_micro': self.trend_micro,
                 'reversl': self.reversal,

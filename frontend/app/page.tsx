@@ -44,9 +44,9 @@ const TIMEFRAMES: Record<string, string> = {
 
 // ←ここをユーザー指定に合わせて編集するだけでOK
 const INDICATORS = {
-  ema20: { name: 'ema20', color: '#0ea5e9', chart: 0 },
-  ema200: { name: 'EMA200', color: '#a855f7', chart: 0 },
-  atr: { name: 'atr', color: '#111827', chart: 1 }, // ※バックエンド未実装ならスキップ表示
+  upper: { name: 'upper', color: '#0eec46ff', chart: 0 },
+  lower: { name: 'lower', color: '#e40a0aff', chart: 0 },
+  atr: { name: 'atr', color: '#162df8ff', chart: 1 }, // ※バックエンド未実装ならスキップ表示
 } as const;
 type IndicatorKey = keyof typeof INDICATORS;
 type IndicatorCfg = (typeof INDICATORS)[IndicatorKey];
