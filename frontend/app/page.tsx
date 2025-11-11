@@ -80,7 +80,7 @@ type MarkerItem = {
 export default function Page() {
   const [symbol, setSymbol] = useState<string>('JP225');
   const [timeframe, setTimeframe] = useState<string>('M1');
-  const [length, setLength] = useState<number>(1000);
+  const [length, setLength] = useState<number>(500);
 
   const [enabledIndi, setEnabledIndi] = useState<Record<IndicatorKey, boolean>>({ upper: true, lower: true, atr: true });
   const [enabledMarker, setEnabledMarker] = useState<Record<MarkerKey, boolean>>({ buy: true, sell: true });
@@ -281,6 +281,7 @@ export default function Page() {
       color: cfg.color,
       shape: (cfg as any).shape,
       position: (cfg as any).position,
+      size: 2,
     }));
 
     if (cfg.chart === 1) {
@@ -312,7 +313,7 @@ export default function Page() {
   }
 
   // ===== ポーリング =====
-  const pollMs = 10_000;
+  const pollMs = 5_000;
   const busy = useRef(false);
   const timer = useRef<number | null>(null);
   useEffect(() => {
@@ -339,7 +340,7 @@ export default function Page() {
   return (
     <main className="flex min-h-screen items-start justify-start p-6 bg-gray-50">
       <section className="flex flex-col gap-4 p-4 bg-white rounded-lg shadow-md w-[300px]">
-        <h1 className="text-xl font-semibold text-gray-800">SparkleWay</h1>
+        <h1 className="text-xl font-semibold text-gray-800">Montblanc</h1>
 
         <div className="flex flex-col gap-1">
           <label className="text-sm text-gray-600">Symbol</label>
