@@ -44,17 +44,19 @@ const TIMEFRAMES: Record<string, string> = {
 };
 
 // ========= インディケータ（点表示） =========
+// chart: 0=Main, 1=Sub1, 2=Sub2
 const INDICATORS = {
   upper: { name: 'upper', color: '#eb9ae7ff', chart: 0, radius: 3 },
   lower: { name: 'lower', color: '#88e9ecff', chart: 0, radius: 3 },
-  atr: { name: 'atr', color: '#044ed6ff', chart: 1, radius: 2 },
+  atr: { name: 'atr', color: '#044ed6ff', chart: 1, radius: 2 }, // 既存のサブ1
+  counts: { name: 'counts', color: '#e01191ff', chart: 2, radius: 2 }, // 新しくサブ2へ（バックエンドで values を返す前提）
 } as const;
 
 type IndicatorKey = keyof typeof INDICATORS;
 
 // ========= マーカー設定（v5: createSeriesMarkers を使用） =========
 // dataset: バックエンドのデータ名
-// chart: 0=メイン(ローソクへ), 1=サブ(不可視ラインへ)
+// chart: 0=メイン(ローソクへ), 1=サブ1(不可視ラインへ), 2=サブ2(不可視ラインへ)
 // shape: 'arrowUp'|'arrowDown'|'circle'|'square'
 // position: 'aboveBar'|'belowBar'|'inBar'
 const MARKERS = {
@@ -74,7 +76,6 @@ type MarkerItem = {
   position?: any;
   text?: string;
   size?: number;
-  price?: number; // サブ用に残す（inBar 等は不要）
 };
 
 export default function Page() {
@@ -82,23 +83,25 @@ export default function Page() {
   const [timeframe, setTimeframe] = useState<string>('M1');
   const [length, setLength] = useState<number>(500);
 
-  const [enabledIndi, setEnabledIndi] = useState<Record<IndicatorKey, boolean>>({ upper: true, lower: true, atr: true });
+  const [enabledIndi, setEnabledIndi] = useState<Record<IndicatorKey, boolean>>({ upper: true, lower: true, atr: true, rsi14: true });
   const [enabledMarker, setEnabledMarker] = useState<Record<MarkerKey, boolean>>({ buy: true, sell: true });
 
   const enabledIndiJSON = useMemo(() => JSON.stringify(enabledIndi), [enabledIndi]);
   const enabledMarkerJSON = useMemo(() => JSON.stringify(enabledMarker), [enabledMarker]);
 
-  // ---- チャート参照（0=メイン, 1=サブ）----
+  // ---- DOM コンテナ ----
   const mainEl = useRef<HTMLDivElement | null>(null);
-  const subEl = useRef<HTMLDivElement | null>(null);
-  const mainChart = useRef<IChartApi | null>(null);
-  const subChart = useRef<IChartApi | null>(null);
+  const sub1El = useRef<HTMLDivElement | null>(null);
+  const sub2El = useRef<HTMLDivElement | null>(null);
+
+  // ---- Chart API 参照（0=Main, 1=Sub1, 2=Sub2）
+  const chartsRef = useRef<Array<IChartApi | null>>([null, null, null]);
 
   const candleSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const indiSeries = useRef<Partial<Record<IndicatorKey, ISeriesApi<'Line'>>>>({});
   const markerHostSeries = useRef<Partial<Record<MarkerKey, ISeriesApi<'Line'>>>>({});
 
-  // v5 markers: primitive を **一度だけ作成** し、以降は setMarkers で上書きする
+  // markers primitive 保持（Main は1つ、Sub はキー毎）
   const mainMarkersPrimitive = useRef<ReturnType<typeof createSeriesMarkers> | null>(null);
   const subMarkersPrimitive = useRef<Partial<Record<MarkerKey, ReturnType<typeof createSeriesMarkers>>>>({});
 
@@ -132,61 +135,62 @@ export default function Page() {
   // ---- 初期化 ----
   useEffect(() => {
     if (!mainEl.current) return;
-    const main = createChart(mainEl.current, {
-      height: 520,
-      layout: { background: { color: 'white' }, textColor: '#111827' },
-      timeScale: { timeVisible: true, secondsVisible: true },
-      rightPriceScale: { borderVisible: false },
-      grid: { vertLines: { visible: false }, horzLines: { visible: true } },
-      localization: { locale: 'ja-JP', timeFormatter: formatTimeJST },
-    });
-    main.applyOptions({
-      timeScale: { timeVisible: true, secondsVisible: true, tickMarkFormatter: (t) => jstTickFmt.format(timeToDate(t)) },
-      localization: { timeFormatter: (t) => jstFullFmt.format(timeToDate(t)) },
-    });
-    mainChart.current = main;
+
+    const makeChart = (el: HTMLDivElement, height: number, textColor: string) => {
+      const c = createChart(el, {
+        height,
+        layout: { background: { color: 'white' }, textColor },
+        timeScale: { timeVisible: true, secondsVisible: true },
+        rightPriceScale: { borderVisible: false },
+        grid: { vertLines: { visible: false }, horzLines: { visible: true } },
+        localization: { locale: 'ja-JP', timeFormatter: formatTimeJST },
+      });
+      c.applyOptions({
+        timeScale: { timeVisible: true, secondsVisible: true, tickMarkFormatter: (t) => jstTickFmt.format(timeToDate(t)) },
+        localization: { timeFormatter: (t) => jstFullFmt.format(timeToDate(t)) },
+      });
+      return c;
+    };
+
+    // main
+    const main = makeChart(mainEl.current, 520, '#111827');
+    chartsRef.current[0] = main;
 
     const candle = main.addSeries(CandlestickSeries, {
       upColor: '#22c55e', downColor: '#ef4444', borderUpColor: '#22c55e', borderDownColor: '#ef4444', wickUpColor: '#22c55e', wickDownColor: '#ef4444',
     });
     candleSeries.current = candle;
 
-    if (subEl.current) {
-      const sub = createChart(subEl.current, {
-        height: 160,
-        layout: { background: { color: 'white' }, textColor: '#374151' },
-        timeScale: { timeVisible: true, secondsVisible: true },
-        rightPriceScale: { borderVisible: false },
-        grid: { vertLines: { visible: false }, horzLines: { visible: true } },
-        localization: { locale: 'ja-JP', timeFormatter: formatTimeJST },
-      });
-      sub.applyOptions({
-        timeScale: { timeVisible: true, secondsVisible: true, tickMarkFormatter: (t) => jstTickFmt.format(timeToDate(t)) },
-        localization: { timeFormatter: (t) => jstFullFmt.format(timeToDate(t)) },
-      });
-      subChart.current = sub;
-    }
+    // sub1
+    if (sub1El.current) chartsRef.current[1] = makeChart(sub1El.current, 160, '#374151');
+    // sub2
+    if (sub2El.current) chartsRef.current[2] = makeChart(sub2El.current, 160, '#374151');
 
     const handleResize = () => {
-      if (mainEl.current && mainChart.current) mainChart.current.applyOptions({ width: mainEl.current.clientWidth });
-      if (subEl.current && subChart.current) subChart.current.applyOptions({ width: subEl.current.clientWidth });
+      const w0 = mainEl.current?.clientWidth ?? undefined;
+      const w1 = sub1El.current?.clientWidth ?? undefined;
+      const w2 = sub2El.current?.clientWidth ?? undefined;
+      if (chartsRef.current[0] && w0) chartsRef.current[0]!.applyOptions({ width: w0 });
+      if (chartsRef.current[1] && w1) chartsRef.current[1]!.applyOptions({ width: w1 });
+      if (chartsRef.current[2] && w2) chartsRef.current[2]!.applyOptions({ width: w2 });
     };
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => {
       window.removeEventListener('resize', handleResize);
-      // primitive は setMarkers([]) で空にしておけば OK（detach 不要）
       mainMarkersPrimitive.current?.setMarkers?.([] as any);
       Object.values(subMarkersPrimitive.current).forEach((p) => p?.setMarkers?.([] as any));
-      subChart.current?.remove();
-      main.remove();
+      chartsRef.current.forEach((c) => c?.remove());
+      chartsRef.current = [null, null, null];
     };
   }, []);
+
+  const getChart = (index: number) => chartsRef.current[index] ?? null;
 
   const ensureDots = (key: IndicatorKey): ISeriesApi<'Line'> | null => {
     if (indiSeries.current[key]) return indiSeries.current[key]!;
     const cfg = INDICATORS[key];
-    const chart = cfg.chart === 0 ? mainChart.current : subChart.current;
+    const chart = getChart(cfg.chart);
     if (!chart) return null;
     const s = chart.addSeries(LineSeries, {
       color: cfg.color,
@@ -203,7 +207,7 @@ export default function Page() {
   const ensureMarkerHost = (key: MarkerKey): ISeriesApi<'Line'> | null => {
     if (markerHostSeries.current[key]) return markerHostSeries.current[key]!;
     const cfg = MARKERS[key];
-    const chart = cfg.chart === 0 ? mainChart.current : subChart.current;
+    const chart = getChart(cfg.chart);
     if (!chart) return null;
     const s = chart.addSeries(LineSeries, { color: '#00000000', lineWidth: 1, visible: false });
     markerHostSeries.current[key] = s;
@@ -233,8 +237,9 @@ export default function Page() {
       close: Number(d.close),
     }));
     candleSeries.current?.setData(candles);
-    mainChart.current?.timeScale().scrollToPosition(0, false);
-    subChart.current?.timeScale().scrollToPosition(0, false);
+    getChart(0)?.timeScale().scrollToPosition(0, false);
+    getChart(1)?.timeScale().scrollToPosition(0, false);
+    getChart(2)?.timeScale().scrollToPosition(0, false);
   }
 
   const asDotsData = (seriesData: Array<{ time: number; value: number | null }>): LineData[] =>
@@ -260,9 +265,8 @@ export default function Page() {
 
   async function fetchMarkerDataset(k: MarkerKey) {
     if (!enabledMarker[k]) {
-      // 無効化 → 空配列をセット
       if (k in subMarkersPrimitive.current) subMarkersPrimitive.current[k]?.setMarkers?.([] as any);
-      if (k === 'last2') mainMarkersPrimitive.current?.setMarkers?.([] as any);
+      if (k === 'buy' || k === 'sell') mainMarkersPrimitive.current?.setMarkers?.([] as any);
       return [] as MarkerItem[];
     }
 
@@ -281,13 +285,12 @@ export default function Page() {
       color: cfg.color,
       shape: (cfg as any).shape,
       position: (cfg as any).position,
-      size: 2,
+      size: 3,
     }));
 
-    if (cfg.chart === 1) {
+    if (cfg.chart === 1 || cfg.chart === 2) {
       const host = ensureMarkerHost(k);
       if (host) {
-        // primitive を作って以降は setMarkers で上書き
         if (!subMarkersPrimitive.current[k]) subMarkersPrimitive.current[k] = createSeriesMarkers(host, [] as any);
         subMarkersPrimitive.current[k]?.setMarkers?.(items as any);
       }
@@ -298,14 +301,11 @@ export default function Page() {
 
   async function loadAll() {
     await fetchCandles();
-    // インディケータ
     await Promise.allSettled((Object.keys(INDICATORS) as IndicatorKey[]).map((k) => fetchIndicator(k)));
 
-    // マーカー
     const all = await Promise.all((Object.keys(MARKERS) as MarkerKey[]).map((k) => fetchMarkerDataset(k)));
-    const mergedForMain = all.flat().filter((_, i, a) => !!a[i]);
+    const mergedForMain = all.flat();
 
-    // main 側の primitive は一度だけ作成 → setMarkers で差し替え
     if (candleSeries.current) {
       if (!mainMarkersPrimitive.current) mainMarkersPrimitive.current = createSeriesMarkers(candleSeries.current, [] as any);
       mainMarkersPrimitive.current.setMarkers?.(mergedForMain as any);
@@ -371,7 +371,7 @@ export default function Page() {
           <div className="text-sm font-medium text-gray-700">Indicators</div>
           {(Object.keys(INDICATORS) as IndicatorKey[]).map((k) => (
             <div key={k} className="flex items-center justify-between">
-              <Label htmlFor={k}>{labelOf(k)}<span className="ml-2 text-xs text-gray-400">{INDICATORS[k].chart === 0 ? 'Main' : 'Sub'}</span></Label>
+              <Label htmlFor={k}>{labelOf(k)}<span className="ml-2 text-xs text-gray-400">{['Main', 'Sub1', 'Sub2'][INDICATORS[k].chart]}</span></Label>
               <Switch id={k} checked={enabledIndi[k]} onCheckedChange={(v) => setEnabledIndi((p) => ({ ...p, [k]: v }))} />
             </div>
           ))}
@@ -381,7 +381,7 @@ export default function Page() {
           <div className="text-sm font-medium text-gray-700">Markers</div>
           {(Object.keys(MARKERS) as MarkerKey[]).map((k) => (
             <div key={k} className="flex items-center justify-between">
-              <Label htmlFor={`m-${k}`}>{k.toUpperCase()}<span className="ml-2 text-xs text-gray-400">{MARKERS[k].chart === 0 ? 'Main' : 'Sub'}</span></Label>
+              <Label htmlFor={`m-${k}`}>{k.toUpperCase()}<span className="ml-2 text-xs text-gray-400">{['Main', 'Sub1', 'Sub2'][MARKERS[k].chart]}</span></Label>
               <Switch id={`m-${k}`} checked={enabledMarker[k]} onCheckedChange={(v) => setEnabledMarker((p) => ({ ...p, [k]: v }))} />
             </div>
           ))}
@@ -393,7 +393,9 @@ export default function Page() {
       <section className="flex-1 ml-6 bg-white rounded-lg shadow-md p-4">
         <div ref={mainEl} className="w-full h-[520px]" />
         <div className="mt-2" />
-        <div ref={subEl} className="w-full h-[160px]" />
+        <div ref={sub1El} className="w-full h-[160px]" />
+        <div className="mt-2" />
+        <div ref={sub2El} className="w-full h-[160px]" />
       </section>
     </main>
   );

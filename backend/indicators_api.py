@@ -44,7 +44,7 @@ def _dataset_key(symbol: str, timeframe: str) -> str:
     return f"{symbol.upper()}::{timeframe.lower()}"
 
 # 既定の事前計算インジ（フロントと合わせて小文字トークンで統一）
-DEFAULT_PRECOMPUTE = ["upper", "lower", "atr", "entries", "exits"]
+DEFAULT_PRECOMPUTE = ["upper", "lower", "atr", "entries", "exits", "counts"]
 
 
 
@@ -272,6 +272,8 @@ def _compute_indicators_mt5(symbol: str, df: pd.DataFrame, tokens: List[str]) ->
             df_out[token] = montblanc.entries
         elif token == "exits":
             df_out[token] = montblanc.exits
+        elif token == "counts":
+            df_out[token] = montblanc.update_counts
     #print(len(df_out), df_out.columns)
     return df_out
    
@@ -403,7 +405,7 @@ def test():
     symbol = 'JP225'
     df = retrieve_data(symbol, 'M1', 1000, how='mt5')
     print(df.columns, len(df))
-    df_c = _compute_indicators_mt5(symbol, df, ['upper', 'lower', 'atr'])
+    df_c = _compute_indicators_mt5(symbol, df, ['upper', 'lower', 'atr', 'counts'])
     print(df_c.columns, len(df_c))
     
 

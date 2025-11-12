@@ -133,25 +133,6 @@ class Montblanc:
                 out[i] = signal[i]
         return out
 
-    def signals_df(self):
-        d = {
-                Columns.JST : self.timestamp,
-                Columns.OPEN: self.op,
-                Columns.HIGH: self.hi,
-                Columns.LOW: self.lo,
-                Columns.CLOSE: self.cl,
-                Indicators.ATR: self.atr,
-                'upper': self.upper_line,
-                'lower': self.lower_line,
-                'trend': self.trend,
-                'trend_micro': self.trend_micro,
-                'reversl': self.reversal,
-                'reversal_micro': self.reversal_micro,
-                'peaks': self.peaks,
-                'entries': self.entries,
-                'exits': self.exits,
-             }
-        return pd.DataFrame(d)
         
     def calc(self, df):
         self.timestamp = df['jst'].tolist()
@@ -167,57 +148,26 @@ class Montblanc:
         self.micro_upper_line = ul
         self.micro_lower_line = ll
         self.trend = trend
+        self.update_counts = counts
         self.reversal = reversal
         self.trend_micro = trend_micro
         self.reversal_micro = reversal_micro
-        self.peaks, self.entries, self.exits = self.detect_signals()
+        self.entries, self.exits = self.detect_signals()
     
     def detect_signals(self):
         n = len(self.cl)
-        peaks = np.full(n, 0)
-        for i in range(1, n):
-            # microトレンドが変化したところがエントリー候補
-            if self.trend[i] == 1 and self.reversal_micro[i] == 1:
-                # buy
-                peaks[i] = 1
-            elif self.trend[i] == -1 and self.reversal_micro[i] == -1:
-                # sell
-                peaks[i] = -1    
-                
-        entries = np.full(n, 0)            
+        entries = np.full(n, 0)
         exits = np.full(n, 0)
-        last_price = None    
-        last_entry_i = None
-        
         for i in range(1, n):
+            # trendが変化したときにクローズ
             if self.reversal[i] != 0:
-                # trendが変化したときはクローズ
-                exits[i] = self.reversal[i]    
-                last_price = None    
-                last_entry_i = None
-                continue
-            
-            if last_price is None:
-                if peaks[i] != 0:
-                    entries[i] = peaks[i]
-                    last_price = self.cl[i]
-                    last_entry_i = i
-            else:
-                if peaks[i] == 1:
-                    if self.cl[i] >= last_price:
-                        entries[i] = Signal.LONG
-                        last_entry_i = i
-                    #else:
-                    #    exits[i] = Signal.SHORT
-                    last_price = self.cl[i]
-                elif peaks[i] == -1:
-                    if self.cl[i] <= last_price:
-                        entries[i] = Signal.SHORT
-                        last_entry_i = i
-                    #else:
-                    #    exits[i] = Signal.LONG
-                    last_price = self.cl[i]    
-        return peaks, entries, exits
+                exits[i] = self.reversal[i]
+            # microトレンドが変化したところでエントリー
+            if self.trend[i] == 1 and self.reversal_micro[i] == 1:
+                entries[i] = Signal.LONG
+            elif self.trend[i] == -1 and self.reversal_micro[i] == -1:
+                entries[i] = Signal.SHORT
+        return entries, exits
      
     def simulate_doten(self, tbegin, tend):
         def cleanup(i, h, l):
