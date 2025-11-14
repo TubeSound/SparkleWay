@@ -257,7 +257,7 @@ def load_params(symbol, ver, volume, position_max):
 def _compute_indicators_mt5(symbol: str, df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame:
     #print('indicator ', df.columns, tokens)
     df_out = df.copy()
-    params = load_params(symbol, "4.1", 0, 0)
+    params = load_params(symbol, "5.1", 0, 0)
     montblanc = Montblanc(symbol, params[0])
     montblanc.calc(df_out)    
     for token in tokens:

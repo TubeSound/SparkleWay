@@ -7,6 +7,7 @@ from common import Columns, Indicators
 from trade_manager import TradeManager, Signal, PositionInfo
 
 class MontblancParam:
+    mode = 0
     atr_term = 10
     trend_minutes = 5
     trend_multiply = 2.0
@@ -19,6 +20,7 @@ class MontblancParam:
 
     def to_dict(self):
         dic = {
+                'mode': self.mode,
                 'atr_term': self.atr_term,
                 'trend_minutes': self.trend_minutes,
                 'trend_multiply': self.trend_multiply,
@@ -33,7 +35,8 @@ class MontblancParam:
     
     @staticmethod
     def load_from_dic(dic: dict):
-        param = MontblancParam()   
+        param = MontblancParam()
+        param.mode = int(dic['mode'])   
         param.atr_term = int(dic['atr_term'])
         param.trend_minutes = int(dic['trend_minutes'])
         param.trend_multiply = float(dic['trend_multiply'])
@@ -52,8 +55,7 @@ class Montblanc:
     def __init__(self, symbol, param: MontblancParam):
         self.symbol = symbol
         self.param = param
-        
-        
+           
     def result_df(self):
         dic = {
                 'jst': self.timestamp,
@@ -61,16 +63,14 @@ class Montblanc:
                 'high': self.hi,
                 'low': self.lo,
                 'close': self.cl, 
-                'entry_signal': self.entries,
-                'exit_signal': self.exits,
+                'entries': self.entries,
+                'exits': self.exits,
                 'trend': self.trend,
                 'reversal': self.reversal,
+                'peaks': self.peaks,
                 'atr': self.atr,
-                'long': self.buy_signal, 
-                'short': self.sell_signal,
-                'exit': self.exit_signal, 
-                'reason': self.reason,
-                'profit': self.profits
+                'upper': self.upper_line,
+                'lower': self.lower_line
                 } 
         
         df = pd.DataFrame(dic)
@@ -147,14 +147,18 @@ class Montblanc:
         self.lower_line = lower_line
         self.micro_upper_line = ul
         self.micro_lower_line = ll
+        self.peaks = reversal_micro
         self.trend = trend
         self.update_counts = counts
         self.reversal = reversal
         self.trend_micro = trend_micro
         self.reversal_micro = reversal_micro
-        self.entries, self.exits = self.detect_signals()
-    
-    def detect_signals(self):
+        if self.param.mode == 0:
+            self.entries, self.exits = self.detect_signals0()
+        elif self.param.mode == 1:
+            self.entries, self.exits = self.detect_signals1()
+            
+    def detect_signals0(self):
         n = len(self.cl)
         entries = np.full(n, 0)
         exits = np.full(n, 0)
@@ -168,13 +172,46 @@ class Montblanc:
             elif self.trend[i] == -1 and self.reversal_micro[i] == -1:
                 entries[i] = Signal.SHORT
         return entries, exits
+    
+    def detect_signals1(self):
+        n = len(self.cl)
+        entries = np.full(n, 0)
+        exits = np.full(n, 0)
+        last_peak_price = None
+        for i in range(1, n):
+            # trendが変化したときにクローズ
+            if self.reversal[i] != 0:
+                exits[i] = self.reversal[i]
+            # microトレンドが変化したところでエントリー
+            if self.trend[i] == 1 and self.reversal_micro[i] == 1:
+                go = False
+                if last_peak_price is None:
+                    go = True
+                else:
+                    if self.cl[i] >= last_peak_price:
+                        go = True
+                if go:
+                    entries[i] = Signal.LONG
+                last_peak_price = self.cl[i]
+            elif self.trend[i] == -1 and self.reversal_micro[i] == -1:
+                go = False
+                if last_peak_price is None:
+                    go = True
+                else:
+                    if self.cl[i] <= last_peak_price:
+                        go = True
+                if go:        
+                    entries[i] = Signal.SHORT
+                last_peak_price = self.cl[i]        
+            if self.reversal[i] != 0:
+                last_peak_price = None
+        return entries, exits
      
     def simulate_doten(self, tbegin, tend):
         def cleanup(i, h, l):
             close_tickets = []
             for ticket, position in manager.positions.items():
                 if position.is_sl(l, h):
-
                     position.profit = - position.sl
                     position.exit_time = jst[i]
                     position.exit_price = position.sl_price
