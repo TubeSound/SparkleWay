@@ -159,9 +159,9 @@ class Mt5Trade:
 
         if stoploss > 0:
             if signal == Signal.LONG:
-                request['sl'] = float(price - stoploss)
+                request['sl'] = float(stoploss)
             elif signal == Signal.SHORT:
-                request['sl'] = float(price + stoploss)
+                request['sl'] = float(stoploss)
         
         if takeprofit is None:
             takeprofit = 0
@@ -403,3 +403,17 @@ def test2():
     now = datetime.now()
     trade.entry('US100', Signal.LONG, now, 0.01, 100, 100)
 
+
+def test3():
+    trade = Mt5Trade(3, 2, 11, 1, 3.0)
+    trade.connect()
+    df = trade.get_rates('US100', 'M1', 3)
+    print(df[Columns.UTC], df[Columns.JST])
+    
+    
+    now = datetime.now()
+    trade.set_sl('US100', 36963537, 24500)
+
+
+if __name__ == '__main__':
+    test3()

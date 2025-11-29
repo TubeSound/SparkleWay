@@ -257,15 +257,15 @@ def load_params(symbol, ver, volume, position_max):
 def _compute_indicators_mt5(symbol: str, df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame:
     #print('indicator ', df.columns, tokens)
     df_out = df.copy()
-    params = load_params(symbol, "5.1", 0, 0)
+    params = load_params(symbol, "2", 0, 0)
     montblanc = Montblanc(symbol, params[0])
     montblanc.calc(df_out)    
     for token in tokens:
         token = token.strip().lower()
         if token == 'upper':
-            df_out[token] = montblanc.upper_line
+            df_out[token] = montblanc.upper_minor
         elif token == 'lower':
-            df_out[token] = montblanc.lower_line
+            df_out[token] = montblanc.lower_minor
         elif token == 'atr':
             df_out[token] = montblanc.atr
         elif token == "entries":

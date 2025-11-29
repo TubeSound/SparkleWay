@@ -2,17 +2,18 @@ import numpy as np
 import pandas as pd
 import MetaTrader5 as mt5api
 
-from technical import calc_sma, calc_ema, calc_atr, is_nans, trend_heikin, super_trend
+from technical import calc_sma, calc_ema, calc_atr, is_nans, trend_heikin, super_trend, ema_reversal, slope_trend
 from common import Columns, Indicators
 from trade_manager import TradeManager, Signal, PositionInfo
 
 class MontblancParam:
-    mode = 0
-    atr_term = 10
-    trend_minutes = 5
+    ema_term_entry = 12
+    filter_term_exit = 24
+    atr_term = 14
+    trend_major_minutes = 60
+    trend_major_multiply = 2.0
+    trend_minutes = 15
     trend_multiply = 2.0
-    trend_micro_minutes = 1
-    trend_micro_multiply = 2.0 
     sl = 0.5
     sl_loose = None
     position_max = 5
@@ -20,12 +21,13 @@ class MontblancParam:
 
     def to_dict(self):
         dic = {
-                'mode': self.mode,
+                'ema_term_entry': self.ema_term_entry,
+                'filter_term_exit': self.filter_term_exit,
                 'atr_term': self.atr_term,
+                'trend_major_minutes': self.trend_major_minutes,
+                'trend_major_multiply': self.trend_major_multiply,
                 'trend_minutes': self.trend_minutes,
                 'trend_multiply': self.trend_multiply,
-                'trend_micro_minutes': self.trend_micro_minutes,
-                'trend_micro_multiply': self.trend_micro_multiply,
                 'sl': self.sl,
                 'sl_loose': self.sl_loose,
                 'position_max': self.position_max,
@@ -35,13 +37,14 @@ class MontblancParam:
     
     @staticmethod
     def load_from_dic(dic: dict):
-        param = MontblancParam()
-        param.mode = int(dic['mode'])   
+        param = MontblancParam()   
+        param.ema_term_entry = int(dic['ema_term_entry'])
+        param.filter_term_exit = int(dic['filter_term_exit'])
         param.atr_term = int(dic['atr_term'])
+        param.trend_major_minutes = int(dic['trend_major_minutes'])
+        param.trend_major_multiply = float(dic['trend_major_multiply'])
         param.trend_minutes = int(dic['trend_minutes'])
         param.trend_multiply = float(dic['trend_multiply'])
-        param.trend_micro_minutes = int(dic['trend_micro_minutes'])
-        param.trend_micro_multiply = float(dic['trend_micro_multiply'])
         param.sl = float(dic['sl'])
         if dic['sl_loose'] == None:
             param.sl_loose = None
@@ -66,74 +69,71 @@ class Montblanc:
                 'entries': self.entries,
                 'exits': self.exits,
                 'trend': self.trend,
-                'reversal': self.reversal,
-                'peaks': self.peaks,
+                'trend_minor': self.trend_minor,
+                'trend_major': self.trend_major,
+                'trend_micro': self.trend_micro,
+                'reversal_major': self.reversal_major,
+                'reversal_minor': self.reversal_minor,
+                'reversal_micro': self.reversal_micro,
                 'atr': self.atr,
-                'upper': self.upper_line,
-                'lower': self.lower_line
+                'upper_minor': self.upper_minor,
+                'lower_minor': self.lower_minor,
+                'upper_major': self.upper_major,
+                'lower_major': self.lower_major,
+                'ema_entry': self.ema_entry,
+                'slope_exit': self.slope_exit,
                 } 
         
         df = pd.DataFrame(dic)
-        return df
-        
-    def difference(self, vector1, vector2, ma_window):
-        n = len(vector1)
-        dif = np.full(n, np.nan)
-        for i in range(n):
-            if is_nans([vector1[i], vector2[i]]):
-                continue
-            if vector2[i] == 0.0:
-                continue
-            dif[i] = (vector1[i] - vector2[i]) / vector2[i] * 100.0
-        if ma_window > 0:
-            return calc_sma(dif, ma_window)    
-        else:
-            return dif
+        return df   
         
     def count_value(self, array, value):
         n = 0
         for v in array:
             if v == value:
                 n += 1
-        return n
+        return n                 
         
-    def signal_filter(self, signal, dif, window, num_max):
-        n = len(signal)
-        counts = [0, 0]
-        out = np.full(n, 0)
-        for i in range(1, n):
-            if i == 0:
-                if signal[i] != 0:
-                    out[i] = signal[i]
+    def calc_ema(self, cl, term, trend):
+        def search_term(trend, j):
+            begin = None
+            for i in range(j, n):
+                if begin == None:
+                    if trend[i] == 1 or trend[i] == -1:
+                        begin = i
+                        status = trend[i]
+                else:
+                    if trend[i] != status:
+                        end = i - 1   
+                        return (begin, end), False               
+            if begin is not None:
+                end = len(trend) - 1
+                return (begin, len(trend) - 1), True
             else:
-                if signal[i] != 0:
-                    begin = i - window
-                    if begin < 0:
-                        begin = 0
-                    s = signal[begin: i]
-                    d = dif[begin: i] 
-                    if self.count_value(s, signal[i]) < num_max: 
-                        if signal[i] == 1:
-                            # Long   
-                            if dif[i] < min(d):
-                                out[i] = 1
-                                counts[0] += 1
-                        else:
-                            # Short
-                            if dif[i] > max(d):
-                                out[i] = -1
-                                counts[1] += 1
-        return out, counts                    
-            
-    def mask_with_trend(self, signal, trend):
+                return (None, None), True
+                  
+        n = len(cl)
+        ma = np.full(n, np.nan)
+        i = 0
+        while True :
+            (begin, end), finish = search_term(trend, i)
+            if begin is None:
+                break
+            d = cl[begin: end + 1]
+            ma[begin : end + 1] = calc_ema(d, term)
+            if finish:
+                break
+            i = end + 1
+        return ma
+        
+    def mask(self, signal, trend):
+        out = signal.copy()
         n = len(signal)
-        out = np.full(n, 0)
         for i in range(n):
-            if signal[i] == trend[i]:
-                out[i] = signal[i]
+            if trend[i] != 1 and trend[i] != -1:
+                out[i] = np.nan
         return out
 
-        
     def calc(self, df):
         self.timestamp = df['jst'].tolist()
         self.op = df[Columns.OPEN].to_numpy()
@@ -141,72 +141,64 @@ class Montblanc:
         self.lo = df[Columns.LOW].to_numpy()
         self.cl = df[Columns.CLOSE].to_numpy()
         self.atr = calc_atr(self.hi, self.lo, self.cl, self.param.atr_term)
-        trend, reversal, upper_line, lower_line, counts = super_trend(df, self.param.trend_minutes, self.param.atr_term, self.param.trend_multiply)
-        trend_micro, reversal_micro, ul, ll, counts_micro = super_trend(df, self.param.trend_micro_minutes, self.param.atr_term, self.param.trend_micro_multiply)
-        self.upper_line = upper_line
-        self.lower_line = lower_line
-        self.micro_upper_line = ul
-        self.micro_lower_line = ll
-        self.peaks = reversal_micro
-        self.trend = trend
+        # major trend
+        self.trend_major, self.reversal_major, um, lm, _ = super_trend(df, self.param.trend_major_minutes, self.param.atr_term, self.param.trend_major_multiply)
+        self.upper_major = um
+        self.lower_major = lm
+        
+        # minor trend
+        self.trend_minor, self.reversal_minor, upper_minor, lower_minor, counts = super_trend(df, self.param.trend_minutes, self.param.atr_term, self.param.trend_multiply)
+        self.upper_minor = upper_minor
+        self.lower_minor = lower_minor
         self.update_counts = counts
-        self.reversal = reversal
-        self.trend_micro = trend_micro
-        self.reversal_micro = reversal_micro
-        if self.param.mode == 0:
-            self.entries, self.exits = self.detect_signals0()
-        elif self.param.mode == 1:
-            self.entries, self.exits = self.detect_signals1()
+        
+        # micro trend
+        self.reversal_micro, self.ema_entry = ema_reversal(df, self.param.ema_term_entry)
+        self.trend_micro, slope = slope_trend(self.ema_entry, 5) 
+        
+        # total trend
+        self.trend = self.make_trend([self.trend_major, self.trend_minor, self.trend_micro])
+                
+        # entry
+        self.entries = self.make_entry(self.trend, self.reversal_micro)
+ 
+        # exit
+        self.trend_exit, self.slope_exit = slope_trend(self.ema_entry, self.param.filter_term_exit)
+        self.exits = self.make_exit(self.slope_exit)
+        
             
-    def detect_signals0(self):
-        n = len(self.cl)
-        entries = np.full(n, 0)
-        exits = np.full(n, 0)
-        for i in range(1, n):
-            # trendが変化したときにクローズ
-            if self.reversal[i] != 0:
-                exits[i] = self.reversal[i]
-            # microトレンドが変化したところでエントリー
-            if self.trend[i] == 1 and self.reversal_micro[i] == 1:
-                entries[i] = Signal.LONG
-            elif self.trend[i] == -1 and self.reversal_micro[i] == -1:
-                entries[i] = Signal.SHORT
-        return entries, exits
+    def make_trend(self, trends):
+        def is_match(vector):
+            for i in range(1, len(vector)):
+                if vector[0] != vector[i]:
+                    return False
+            return True
+        n = len(trends[0])
+        trend = np.full(n, 0)
+        for i in range(n):
+            d = [t[i] for t in trends]
+            if is_match(d):
+                trend[i] = d[0]
+        return trend
     
-    def detect_signals1(self):
+    def make_entry(self, trend, reversal_micro):
         n = len(self.cl)
         entries = np.full(n, 0)
+        for i in range(n):
+            if reversal_micro[i] == trend[i]:
+                entries[i] = trend[i]
+        return entries
+    
+    def make_exit(self, slope):
+        n = len(slope)
         exits = np.full(n, 0)
-        last_peak_price = None
         for i in range(1, n):
-            # trendが変化したときにクローズ
-            if self.reversal[i] != 0:
-                exits[i] = self.reversal[i]
-            # microトレンドが変化したところでエントリー
-            if self.trend[i] == 1 and self.reversal_micro[i] == 1:
-                go = False
-                if last_peak_price is None:
-                    go = True
-                else:
-                    if self.cl[i] >= last_peak_price:
-                        go = True
-                if go:
-                    entries[i] = Signal.LONG
-                last_peak_price = self.cl[i]
-            elif self.trend[i] == -1 and self.reversal_micro[i] == -1:
-                go = False
-                if last_peak_price is None:
-                    go = True
-                else:
-                    if self.cl[i] <= last_peak_price:
-                        go = True
-                if go:        
-                    entries[i] = Signal.SHORT
-                last_peak_price = self.cl[i]        
-            if self.reversal[i] != 0:
-                last_peak_price = None
-        return entries, exits
-     
+            if slope[i - 1] >= 0 and slope[i] < 0:
+                exits[i] = -1
+            if slope[i - 1] <= 0 and  slope[i] > 0:
+                exits[i] = 1
+        return exits
+                        
     def simulate_doten(self, tbegin, tend):
         def cleanup(i, h, l):
             close_tickets = []

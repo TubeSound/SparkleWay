@@ -32,6 +32,8 @@ import {
 // ---------- UI 設定 ----------
 const SYMBOLS: Record<string, string> = {
   JP225: 'JP225',
+  US100: 'US100',
+  US330: 'US30',
   XAUUSD: 'XAUUSD',
   USDJPY: 'USDJPY',
 };
